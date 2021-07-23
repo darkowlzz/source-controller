@@ -169,7 +169,7 @@ func (r *HelmChartReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 					sourcev1.ChartReconciled,
 					meta.ReadyCondition,
 					meta.ReconcilingCondition,
-					meta.ProgressingReason,
+					meta.StalledCondition,
 				},
 			},
 		}

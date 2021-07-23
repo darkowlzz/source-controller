@@ -133,7 +133,7 @@ func (r *BucketReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 					sourcev1.SourceAvailableCondition,
 					meta.ReadyCondition,
 					meta.ReconcilingCondition,
-					meta.ProgressingReason,
+					meta.StalledCondition,
 				},
 			},
 		}
