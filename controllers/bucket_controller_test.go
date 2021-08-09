@@ -563,10 +563,11 @@ func TestBucketReconciler_revision(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := (&BucketReconciler{}).revision(tt.list)
-			if got != tt.want {
-				t.Errorf("revision() got = %v, want %v", got, tt.want)
-			}
+			g := NewWithT(t)
+
+			got, err := (&BucketReconciler{}).revision(tt.list)
+			g.Expect(err).ToNot(HaveOccurred())
+			g.Expect(got).To(Equal(tt.want))
 		})
 	}
 }

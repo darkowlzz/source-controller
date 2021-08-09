@@ -349,7 +349,12 @@ func (r *BucketReconciler) reconcileSource(ctx context.Context, obj *sourcev1.Bu
 	}
 
 	// Calculate revision checksum from the collected index values
-	revision := r.revision(index)
+	revision, err := r.revision(index)
+	if err != nil {
+		conditions.MarkTrue(obj, sourcev1.DownloadFailedCondition, sourcev1.BucketOperationFailedReason, "Failed to calculate revision of bucket '%s': %s", obj.Spec.BucketName, err.Error())
+		return ctrl.Result{}, err
+	}
+
 	if !obj.GetArtifact().HasRevision(revision) {
 		// Mark observations about the revision on the object
 		conditions.MarkTrue(obj, sourcev1.ArtifactOutdatedCondition, "NewRevision", "New upstream revision '%s'", revision)
@@ -538,7 +543,7 @@ func (r *BucketReconciler) buildClient(obj *sourcev1.Bucket, secret *corev1.Secr
 // revision calculates the SHA256 checksum of the given string map.
 // The keys are sorted to ensure a stable order, and the SHA256 sum is then calculated for the string representations of
 // the key/value pairs, each pair written on a newline. The sum result is returned as a string.
-func (r *BucketReconciler) revision(list map[string]string) string {
+func (r *BucketReconciler) revision(list map[string]string) (string, error) {
 	keyIndex := make([]string, 0, len(list))
 	for k := range list {
 		keyIndex = append(keyIndex, k)
@@ -546,7 +551,9 @@ func (r *BucketReconciler) revision(list map[string]string) string {
 	sort.Strings(keyIndex)
 	sum := sha256.New()
 	for _, k := range keyIndex {
-		sum.Write([]byte(fmt.Sprintf("%s  %s\n", k, list[k])))
+		if _, err := sum.Write([]byte(fmt.Sprintf("%s  %s\n", k, list[k]))); err != nil {
+			return "", fmt.Errorf("failed to add object key and ETag '%s  %s' to hash: %w", k, list[k], err)
+		}
 	}
-	return fmt.Sprintf("%x", sum.Sum(nil))
+	return fmt.Sprintf("%x", sum.Sum(nil)), nil
 }
