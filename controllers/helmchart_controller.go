@@ -170,7 +170,7 @@ func (r *HelmChartReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Examine if the object is under deletion
 	if !obj.ObjectMeta.DeletionTimestamp.IsZero() {
 		res, err := r.reconcileDelete(ctx, obj)
-		return sreconcile.BuildRuntimeResult(obj, res, err)
+		return sreconcile.BuildRuntimeResult(ctx, r.EventRecorder, obj, res, err)
 	}
 
 	// Reconcile actual object
@@ -180,7 +180,7 @@ func (r *HelmChartReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		r.reconcileArtifact,
 	}
 	recResult, err = r.reconcile(ctx, obj, reconcilers)
-	return sreconcile.BuildRuntimeResult(obj, recResult, err)
+	return sreconcile.BuildRuntimeResult(ctx, r.EventRecorder, obj, recResult, err)
 }
 
 // summarizeAndPatch analyzes the object conditions to create a summary of the
@@ -231,7 +231,7 @@ func (r *HelmChartReconciler) summarizeAndPatch(ctx context.Context, obj *source
 
 	// Analyze the reconcile error.
 	switch t := recErr.(type) {
-	case *serror.StallingError:
+	case *serror.Stalling:
 		// The current generation has been reconciled successfully and it has
 		// resulted in a stalled state. Return no error to stop further
 		// requeuing.
@@ -338,7 +338,7 @@ func (r *HelmChartReconciler) reconcileSource(ctx context.Context, obj *sourcev1
 		// solved by a change in generation
 		if apierrs.ReasonForError(err) != metav1.StatusReasonUnknown {
 			ctrl.LoggerFrom(ctx).Error(err, "failed to get source")
-			err = &serror.StallingError{Err: err, Reason: "UnsupportedSourceKind"}
+			err = &serror.Stalling{Err: err, Reason: "UnsupportedSourceKind"}
 		}
 		return sreconcile.ResultEmpty, err
 	}
@@ -421,12 +421,12 @@ func (r *HelmChartReconciler) reconcileFromHelmRepository(ctx context.Context, o
 			ctrl.LoggerFrom(ctx).Error(err, "invalid Helm repository URL")
 			conditions.MarkTrue(obj, sourcev1.FetchFailedCondition, sourcev1.URLInvalidReason,
 				"Invalid Helm repository URL: %s", err.Error())
-			return sreconcile.ResultEmpty, &serror.StallingError{Err: err, Reason: sourcev1.URLInvalidReason}
+			return sreconcile.ResultEmpty, &serror.Stalling{Err: err, Reason: sourcev1.URLInvalidReason}
 		default:
 			ctrl.LoggerFrom(ctx).Error(err, "failed to construct Helm client")
 			conditions.MarkTrue(obj, sourcev1.FetchFailedCondition, meta.FailedReason,
 				"Failed to construct Helm client: %s", err.Error())
-			return sreconcile.ResultEmpty, &serror.StallingError{Err: err, Reason: meta.FailedReason}
+			return sreconcile.ResultEmpty, &serror.Stalling{Err: err, Reason: meta.FailedReason}
 		}
 	}
 
@@ -459,7 +459,7 @@ func (r *HelmChartReconciler) reconcileFromHelmRepository(ctx context.Context, o
 			r.Eventf(obj, corev1.EventTypeWarning, buildErr.Reason.Reason, buildErr.Error())
 			if chart.IsPersistentBuildErrorReason(buildErr.Reason) {
 				ctrl.LoggerFrom(ctx).Error(err, "failed to build chart from remote source")
-				err = &serror.StallingError{Err: err, Reason: buildErr.Reason.Reason}
+				err = &serror.Stalling{Err: err, Reason: buildErr.Reason.Reason}
 			}
 		}
 		return sreconcile.ResultEmpty, err
@@ -516,7 +516,7 @@ func (r *HelmChartReconciler) reconcileFromTarballArtifact(ctx context.Context, 
 		conditions.MarkTrue(obj, sourcev1.FetchFailedCondition, "IllegalPath",
 			"Path calculation for chart '%s' failed: %s", obj.Spec.Chart, err.Error())
 		// We are unable to recover from this change without a change in generation
-		return sreconcile.ResultEmpty, &serror.StallingError{Err: err, Reason: "IllegalPath"}
+		return sreconcile.ResultEmpty, &serror.Stalling{Err: err, Reason: "IllegalPath"}
 	}
 
 	// Setup dependency manager
@@ -586,7 +586,7 @@ func (r *HelmChartReconciler) reconcileFromTarballArtifact(ctx context.Context, 
 			r.Eventf(obj, corev1.EventTypeWarning, buildErr.Reason.Reason, buildErr.Error())
 			if chart.IsPersistentBuildErrorReason(buildErr.Reason) {
 				ctrl.LoggerFrom(ctx).Error(err, "failed to build chart from source artifact")
-				err = &serror.StallingError{Err: err, Reason: buildErr.Reason.Reason}
+				err = &serror.Stalling{Err: err, Reason: buildErr.Reason.Reason}
 			}
 		}
 		return sreconcile.ResultEmpty, err
