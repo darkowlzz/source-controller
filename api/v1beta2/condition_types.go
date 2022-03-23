@@ -19,15 +19,24 @@ package v1beta2
 const SourceFinalizer = "finalizers.fluxcd.io"
 
 const (
+	// StoredArtifactCondition indicates the availability of Artifact of the
+	// Source in the storage.
+	// If True, the Artifact is stored successfully. If False, the Artifact
+	// couldn't be stored.
+	// This Condition is only present on the resource if the Artifact is
+	// successfully stored.
+	StoredArtifactCondition string = "StoredArtifact"
+
 	// ArtifactOutdatedCondition indicates the current Artifact of the Source
 	// is outdated.
 	// This is a "negative polarity" or "abnormal-true" type, and is only
 	// present on the resource if it is True.
 	ArtifactOutdatedCondition string = "ArtifactOutdated"
 
-	// SourceVerifiedCondition indicates the integrity of the Source has been
-	// verified. If True, the integrity check succeeded. If False, it failed.
-	// The Condition is only present on the resource if the integrity has been
+	// SourceVerifiedCondition indicates the integrity verification of the
+	// Source.
+	// If True, the integrity check succeeded. If False, it failed.
+	// This Condition is only present on the resource if the integrity has been
 	// verified.
 	SourceVerifiedCondition string = "SourceVerified"
 

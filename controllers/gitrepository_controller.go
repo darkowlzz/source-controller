@@ -61,6 +61,7 @@ import (
 var gitRepositoryReadyCondition = summarize.Conditions{
 	Target: meta.ReadyCondition,
 	Owned: []string{
+		sourcev1.StoredArtifactCondition,
 		sourcev1.SourceVerifiedCondition,
 		sourcev1.FetchFailedCondition,
 		sourcev1.StorageOperationFailedCondition,
@@ -72,6 +73,7 @@ var gitRepositoryReadyCondition = summarize.Conditions{
 	},
 	Summarize: []string{
 		sourcev1.IncludeUnavailableCondition,
+		sourcev1.StoredArtifactCondition,
 		sourcev1.SourceVerifiedCondition,
 		sourcev1.FetchFailedCondition,
 		sourcev1.StorageOperationFailedCondition,
@@ -210,6 +212,11 @@ func (r *GitRepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 // object. It returns early on the first call that returns
 // reconcile.ResultRequeue, or produces an error.
 func (r *GitRepositoryReconciler) reconcile(ctx context.Context, obj *sourcev1.GitRepository, reconcilers []gitRepositoryReconcileFunc) (sreconcile.Result, error) {
+	// Delete all the positive polarity conditions since they should be present
+	// only when True.
+	conditions.Delete(obj, sourcev1.StoredArtifactCondition)
+	conditions.Delete(obj, sourcev1.SourceVerifiedCondition)
+
 	// Mark as reconciling if generation differs
 	if obj.Generation != obj.Status.ObservedGeneration {
 		conditions.MarkReconciling(obj, "NewGeneration", "reconciling new object generation (%d)", obj.Generation)
@@ -450,7 +457,7 @@ func (r *GitRepositoryReconciler) reconcileArtifact(ctx context.Context,
 	defer func() {
 		if obj.GetArtifact().HasRevision(artifact.Revision) && !includes.Diff(obj.Status.IncludedArtifacts) {
 			conditions.Delete(obj, sourcev1.ArtifactOutdatedCondition)
-			conditions.MarkTrue(obj, meta.ReadyCondition, meta.SucceededReason,
+			conditions.MarkTrue(obj, sourcev1.StoredArtifactCondition, meta.SucceededReason,
 				"stored artifact for revision '%s'", artifact.Revision)
 		}
 	}()
@@ -625,7 +632,6 @@ func (r *GitRepositoryReconciler) verifyCommitSignature(ctx context.Context, obj
 	// Check if there is a commit verification is configured and remove any old
 	// observations if there is none
 	if obj.Spec.Verification == nil || obj.Spec.Verification.Mode == "" {
-		conditions.Delete(obj, sourcev1.SourceVerifiedCondition)
 		return sreconcile.ResultSuccess, nil
 	}
 
@@ -640,7 +646,6 @@ func (r *GitRepositoryReconciler) verifyCommitSignature(ctx context.Context, obj
 			Err:    fmt.Errorf("PGP public keys secret error: %w", err),
 			Reason: "VerificationError",
 		}
-		conditions.MarkFalse(obj, sourcev1.SourceVerifiedCondition, e.Reason, e.Err.Error())
 		return sreconcile.ResultEmpty, e
 	}
 
@@ -654,7 +659,6 @@ func (r *GitRepositoryReconciler) verifyCommitSignature(ctx context.Context, obj
 			Err:    fmt.Errorf("signature verification of commit '%s' failed: %w", commit.Hash.String(), err),
 			Reason: "InvalidCommitSignature",
 		}
-		conditions.MarkFalse(obj, sourcev1.SourceVerifiedCondition, e.Reason, e.Err.Error())
 		// Return error in the hope the secret changes
 		return sreconcile.ResultEmpty, e
 	}
