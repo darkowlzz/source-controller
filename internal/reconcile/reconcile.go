@@ -17,6 +17,7 @@ limitations under the License.
 package reconcile
 
 import (
+	"errors"
 	"time"
 
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -24,6 +25,7 @@ import (
 	"github.com/fluxcd/pkg/apis/meta"
 	"github.com/fluxcd/pkg/runtime/conditions"
 	"github.com/fluxcd/pkg/runtime/patch"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	serror "github.com/fluxcd/source-controller/internal/error"
 )
@@ -220,4 +222,45 @@ func addPatchOptionWithStatusObservedGeneration(obj conditions.Setter, opts []pa
 		opts = append(opts, patch.WithStatusObservedGeneration{})
 	}
 	return opts
+}
+
+// IsResultSuccess defines if a given ctrl.Result and error result in a
+// successful reconciliation result.
+type IsResultSuccess func(ctrl.Result, error) bool
+
+// ComputeReconcileResultV2 computes the result of reconciliation. It takes
+// ctrl.Result, error from the reconciliation, and a conditions.Setter with
+// conditions, and analyzes them to return a reconciliation error. It mutates
+// the object status conditions based on the input to ensure the conditions are
+// summarized based on kstatus.
+func ComputeReconcileResultV2(obj conditions.Setter, res ctrl.Result, recErr error, isSuccess IsResultSuccess, readySuccessMsg string) error {
+	// If reconcile error isn't nil, a retry needs to be attempted. Since
+	// it's not stalled situation, ensure Stalled condition is removed.
+	// It's a failure state, reflect the failure error on the ready condition.
+	if recErr != nil {
+		conditions.Delete(obj, meta.StalledCondition)
+		conditions.MarkFalse(obj, meta.ReadyCondition, meta.FailedReason, recErr.Error())
+	}
+
+	// If Stalled=True, ensure Reconciling is removed.
+	if sc := conditions.Get(obj, meta.StalledCondition); sc != nil && sc.Status == metav1.ConditionTrue {
+		conditions.Delete(obj, meta.ReconcilingCondition)
+	}
+
+	// If the result is success, ensure Reconciling is removed.
+	// But if Ready!=True, set error value to be the Ready failure message.
+	if isSuccess(res, recErr) {
+		conditions.Delete(obj, meta.ReconcilingCondition)
+		if ready := conditions.Get(obj, meta.ReadyCondition); ready != nil &&
+			ready.Status == metav1.ConditionFalse && !conditions.IsStalled(obj) {
+			recErr = errors.New(conditions.GetMessage(obj, meta.ReadyCondition))
+		}
+	}
+
+	// After the above, if it's still a successful reconciliation and it's not
+	// reconciling or stalled, mark Ready=True.
+	if isSuccess(res, recErr) && !conditions.IsReconciling(obj) && !conditions.IsStalled(obj) {
+		conditions.MarkTrue(obj, meta.ReadyCondition, meta.SucceededReason, readySuccessMsg)
+	}
+	return recErr
 }

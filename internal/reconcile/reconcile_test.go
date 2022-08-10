@@ -17,6 +17,7 @@ limitations under the License.
 package reconcile
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -429,6 +430,144 @@ func TestAddOptionWithStatusObservedGeneration(t *testing.T) {
 				opt.ApplyToHelper(options)
 			}
 			g.Expect(options.IncludeStatusObservedGeneration).To(Equal(tt.want))
+		})
+	}
+}
+
+func TestComputeReconcileResultV2(t *testing.T) {
+	testSuccessInterval := time.Minute
+	readySuccessMsg := "Success"
+
+	isSuccess := func(res ctrl.Result, err error) bool {
+		if err != nil || res.RequeueAfter != testSuccessInterval {
+			return false
+		}
+		return true
+	}
+
+	tests := []struct {
+		name             string
+		beforeFunc       func(obj conditions.Setter)
+		result           ctrl.Result
+		recErr           error
+		wantErr          bool
+		assertConditions []metav1.Condition
+	}{
+		{
+			name: "result with error, overwrite ready value",
+			beforeFunc: func(obj conditions.Setter) {
+				conditions.MarkFalse(obj, meta.ReadyCondition, meta.FailedReason, "fail-msg")
+			},
+			result:  ctrl.Result{},
+			recErr:  errors.New("foo failed"),
+			wantErr: true,
+			assertConditions: []metav1.Condition{
+				*conditions.FalseCondition(meta.ReadyCondition, meta.FailedReason, "foo failed"),
+			},
+		},
+		{
+			name: "result with error and stalled",
+			beforeFunc: func(obj conditions.Setter) {
+				conditions.MarkStalled(obj, "SomeReasonX", "some msg X")
+			},
+			result:  ctrl.Result{},
+			recErr:  errors.New("foo failed"),
+			wantErr: true,
+			assertConditions: []metav1.Condition{
+				*conditions.FalseCondition(meta.ReadyCondition, meta.FailedReason, "foo failed"),
+			},
+		},
+		{
+			name: "result with error, reconciling and stalled",
+			beforeFunc: func(obj conditions.Setter) {
+				// Since MarkStalled() removes existing Reconciling condition,
+				// use MarkTrue instead for setting Reconciling and Stalled.
+				conditions.MarkTrue(obj, meta.ReconcilingCondition, "SomeReasonX", "some msg X")
+				conditions.MarkTrue(obj, meta.StalledCondition, "SomeReasonY", "some msg Y")
+			},
+			result:  ctrl.Result{},
+			recErr:  errors.New("foo failed"),
+			wantErr: true,
+			assertConditions: []metav1.Condition{
+				*conditions.TrueCondition(meta.ReconcilingCondition, "SomeReasonX", "some msg X"),
+				*conditions.FalseCondition(meta.ReadyCondition, meta.FailedReason, "foo failed"),
+			},
+		},
+		{
+			name: "result with error, ready=True",
+			beforeFunc: func(obj conditions.Setter) {
+				conditions.MarkTrue(obj, meta.ReadyCondition, meta.SucceededReason, readySuccessMsg)
+			},
+			result:  ctrl.Result{},
+			recErr:  errors.New("foo failed"),
+			wantErr: true,
+			assertConditions: []metav1.Condition{
+				*conditions.FalseCondition(meta.ReadyCondition, meta.FailedReason, "foo failed"),
+			},
+		},
+		{
+			name: "stalled and reconciling",
+			beforeFunc: func(obj conditions.Setter) {
+				conditions.MarkTrue(obj, meta.ReconcilingCondition, "SomeReasonX", "some msg X")
+				conditions.MarkTrue(obj, meta.StalledCondition, "SomeReasonY", "some msg Y")
+				conditions.MarkFalse(obj, meta.ReadyCondition, "SomeReasonZ", "some msg Z")
+			},
+			result: ctrl.Result{},
+			recErr: nil,
+			assertConditions: []metav1.Condition{
+				*conditions.TrueCondition(meta.StalledCondition, "SomeReasonY", "some msg Y"),
+				*conditions.FalseCondition(meta.ReadyCondition, "SomeReasonZ", "some msg Z"),
+			},
+		},
+		{
+			name: "success result with reconciling and ready",
+			beforeFunc: func(obj conditions.Setter) {
+				conditions.MarkReconciling(obj, "SomeReasonX", "some msg X")
+			},
+			result:  ctrl.Result{RequeueAfter: testSuccessInterval},
+			recErr:  nil,
+			wantErr: false,
+			assertConditions: []metav1.Condition{
+				*conditions.TrueCondition(meta.ReadyCondition, meta.SucceededReason, readySuccessMsg),
+			},
+		},
+		{
+			name: "success results but not ready",
+			beforeFunc: func(obj conditions.Setter) {
+				conditions.MarkFalse(obj, meta.ReadyCondition, meta.FailedReason, "fail-msg")
+			},
+			result:  ctrl.Result{RequeueAfter: testSuccessInterval},
+			recErr:  nil,
+			wantErr: true,
+			assertConditions: []metav1.Condition{
+				*conditions.FalseCondition(meta.ReadyCondition, meta.FailedReason, "fail-msg"),
+			},
+		},
+		{
+			name:       "success no other conditions",
+			beforeFunc: func(obj conditions.Setter) {},
+			result:     ctrl.Result{RequeueAfter: testSuccessInterval},
+			recErr:     nil,
+			wantErr:    false,
+			assertConditions: []metav1.Condition{
+				*conditions.TrueCondition(meta.ReadyCondition, meta.SucceededReason, readySuccessMsg),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewWithT(t)
+
+			obj := &sourcev1.GitRepository{}
+
+			if tt.beforeFunc != nil {
+				tt.beforeFunc(obj)
+			}
+
+			gotErr := ComputeReconcileResultV2(obj, tt.result, tt.recErr, isSuccess, readySuccessMsg)
+			g.Expect(gotErr != nil).To(Equal(tt.wantErr))
+			g.Expect(obj.Status.Conditions).To(conditions.MatchConditions(tt.assertConditions))
 		})
 	}
 }
