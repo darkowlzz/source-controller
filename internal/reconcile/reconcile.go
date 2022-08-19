@@ -255,6 +255,14 @@ func ComputeReconcileResultV2(obj conditions.Setter, res ctrl.Result, recErr err
 			ready.Status == metav1.ConditionFalse && !conditions.IsStalled(obj) {
 			recErr = errors.New(conditions.GetMessage(obj, meta.ReadyCondition))
 		}
+	} else {
+		// ctrl.Result is expected to be zero when stalled. If the result isn't
+		// zero and not success even without considering the error value, a
+		// requeue is requested in the ctrl.Result, not a stalled situation.
+		// Ensure Stalled condition is removed.
+		if !res.IsZero() && !isSuccess(res, nil) {
+			conditions.Delete(obj, meta.StalledCondition)
+		}
 	}
 
 	// After the above, if it's still a successful reconciliation and it's not

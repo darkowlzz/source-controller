@@ -435,11 +435,18 @@ func TestAddOptionWithStatusObservedGeneration(t *testing.T) {
 }
 
 func TestComputeReconcileResultV2(t *testing.T) {
-	testSuccessInterval := time.Minute
 	readySuccessMsg := "Success"
+	successInterval := time.Minute
+	arbitraryInterval := 5 * time.Second
+	resultSuccess := ctrl.Result{RequeueAfter: successInterval}
+	resultStalled := ctrl.Result{}
+	resultFailed := ctrl.Result{}
+	resultRequeue := ctrl.Result{Requeue: true}
 
+	// Success is no error, no immediate or arbitrary requeue in the result.
+	// Only requeue at the success interval.
 	isSuccess := func(res ctrl.Result, err error) bool {
-		if err != nil || res.RequeueAfter != testSuccessInterval {
+		if err != nil || res.RequeueAfter != successInterval || res.Requeue == true {
 			return false
 		}
 		return true
@@ -458,7 +465,7 @@ func TestComputeReconcileResultV2(t *testing.T) {
 			beforeFunc: func(obj conditions.Setter) {
 				conditions.MarkFalse(obj, meta.ReadyCondition, meta.FailedReason, "fail-msg")
 			},
-			result:  ctrl.Result{},
+			result:  resultFailed,
 			recErr:  errors.New("foo failed"),
 			wantErr: true,
 			assertConditions: []metav1.Condition{
@@ -470,7 +477,7 @@ func TestComputeReconcileResultV2(t *testing.T) {
 			beforeFunc: func(obj conditions.Setter) {
 				conditions.MarkStalled(obj, "SomeReasonX", "some msg X")
 			},
-			result:  ctrl.Result{},
+			result:  resultStalled,
 			recErr:  errors.New("foo failed"),
 			wantErr: true,
 			assertConditions: []metav1.Condition{
@@ -485,7 +492,7 @@ func TestComputeReconcileResultV2(t *testing.T) {
 				conditions.MarkTrue(obj, meta.ReconcilingCondition, "SomeReasonX", "some msg X")
 				conditions.MarkTrue(obj, meta.StalledCondition, "SomeReasonY", "some msg Y")
 			},
-			result:  ctrl.Result{},
+			result:  resultStalled,
 			recErr:  errors.New("foo failed"),
 			wantErr: true,
 			assertConditions: []metav1.Condition{
@@ -498,7 +505,7 @@ func TestComputeReconcileResultV2(t *testing.T) {
 			beforeFunc: func(obj conditions.Setter) {
 				conditions.MarkTrue(obj, meta.ReadyCondition, meta.SucceededReason, readySuccessMsg)
 			},
-			result:  ctrl.Result{},
+			result:  resultFailed,
 			recErr:  errors.New("foo failed"),
 			wantErr: true,
 			assertConditions: []metav1.Condition{
@@ -512,7 +519,7 @@ func TestComputeReconcileResultV2(t *testing.T) {
 				conditions.MarkTrue(obj, meta.StalledCondition, "SomeReasonY", "some msg Y")
 				conditions.MarkFalse(obj, meta.ReadyCondition, "SomeReasonZ", "some msg Z")
 			},
-			result: ctrl.Result{},
+			result: resultStalled,
 			recErr: nil,
 			assertConditions: []metav1.Condition{
 				*conditions.TrueCondition(meta.StalledCondition, "SomeReasonY", "some msg Y"),
@@ -520,11 +527,40 @@ func TestComputeReconcileResultV2(t *testing.T) {
 			},
 		},
 		{
+			name: "not success result due to requeue, remove stalled",
+			beforeFunc: func(obj conditions.Setter) {
+				conditions.MarkStalled(obj, "SomeReasonX", "some msg X")
+			},
+			result:           resultRequeue,
+			recErr:           nil,
+			assertConditions: []metav1.Condition{},
+		},
+		{
+			name: "not success result due to arbitrary requeueAfter, remove stalled",
+			beforeFunc: func(obj conditions.Setter) {
+				conditions.MarkStalled(obj, "SomeReasonX", "some msg X")
+			},
+			result:           ctrl.Result{RequeueAfter: arbitraryInterval},
+			recErr:           nil,
+			assertConditions: []metav1.Condition{},
+		},
+		{
+			name: "not success result and explicit no requeue, keep stalled",
+			beforeFunc: func(obj conditions.Setter) {
+				conditions.MarkStalled(obj, "SomeReasonX", "some msg X")
+			},
+			result: ctrl.Result{Requeue: false},
+			recErr: nil,
+			assertConditions: []metav1.Condition{
+				*conditions.TrueCondition(meta.StalledCondition, "SomeReasonX", "some msg X"),
+			},
+		},
+		{
 			name: "success result with reconciling and ready",
 			beforeFunc: func(obj conditions.Setter) {
 				conditions.MarkReconciling(obj, "SomeReasonX", "some msg X")
 			},
-			result:  ctrl.Result{RequeueAfter: testSuccessInterval},
+			result:  resultSuccess,
 			recErr:  nil,
 			wantErr: false,
 			assertConditions: []metav1.Condition{
@@ -536,7 +572,7 @@ func TestComputeReconcileResultV2(t *testing.T) {
 			beforeFunc: func(obj conditions.Setter) {
 				conditions.MarkFalse(obj, meta.ReadyCondition, meta.FailedReason, "fail-msg")
 			},
-			result:  ctrl.Result{RequeueAfter: testSuccessInterval},
+			result:  resultSuccess,
 			recErr:  nil,
 			wantErr: true,
 			assertConditions: []metav1.Condition{
@@ -546,7 +582,7 @@ func TestComputeReconcileResultV2(t *testing.T) {
 		{
 			name:       "success no other conditions",
 			beforeFunc: func(obj conditions.Setter) {},
-			result:     ctrl.Result{RequeueAfter: testSuccessInterval},
+			result:     resultSuccess,
 			recErr:     nil,
 			wantErr:    false,
 			assertConditions: []metav1.Condition{
