@@ -28,7 +28,6 @@ import (
 	helmreg "helm.sh/helm/v3/pkg/registry"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
@@ -50,8 +49,8 @@ import (
 	sourcev1 "github.com/fluxcd/source-controller/api/v1beta2"
 	"github.com/fluxcd/source-controller/internal/helm/registry"
 	"github.com/fluxcd/source-controller/internal/helm/repository"
-	"github.com/fluxcd/source-controller/internal/object"
 	intpredicates "github.com/fluxcd/source-controller/internal/predicates"
+	"github.com/fluxcd/source-controller/internal/reconcile"
 )
 
 var helmRepositoryOCIOwnedConditions = []string{
@@ -140,25 +139,9 @@ func (r *HelmRepositoryOCIReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	// Always attempt to patch the object after each reconciliation.
 	defer func() {
-		// Patch the object, prioritizing the conditions owned by the controller in
-		// case of any conflicts.
-		patchOpts := []patch.Option{
-			patch.WithOwnedConditions{
-				Conditions: helmRepositoryOCIOwnedConditions,
-			},
-		}
-		patchOpts = append(patchOpts, patch.WithFieldOwner(r.ControllerName))
-		// If a reconcile annotation value is found, set it in the object status
-		// as status.lastHandledReconcileAt.
-		if v, ok := meta.ReconcileAnnotationValue(obj.GetAnnotations()); ok {
-			object.SetStatusLastHandledReconcileAt(obj, v)
-		}
-
-		// Set status observed generation option if the object is stalled, or
-		// if the object is ready.
-		if conditions.IsStalled(obj) || conditions.IsReady(obj) {
-			patchOpts = append(patchOpts, patch.WithStatusObservedGeneration{})
-		}
+		// Create patch options for patching the object.
+		patchOpts := []patch.Option{}
+		patchOpts = reconcile.AddPatchOptions(obj, patchOpts, helmRepositoryOCIOwnedConditions, r.ControllerName)
 
 		if err = patchHelper.Patch(ctx, obj, patchOpts...); err != nil {
 			// Ignore patch error "not found" when the object is being deleted.
@@ -206,32 +189,16 @@ func (r *HelmRepositoryOCIReconciler) Reconcile(ctx context.Context, req ctrl.Re
 func (r *HelmRepositoryOCIReconciler) reconcile(ctx context.Context, obj *v1beta2.HelmRepository) (result ctrl.Result, retErr error) {
 	oldObj := obj.DeepCopy()
 
+	isSuccess := func(res ctrl.Result, err error) bool {
+		if err != nil || res.RequeueAfter != obj.GetRequeueAfter() || res.Requeue == true {
+			return false
+		}
+		return true
+	}
+
 	defer func() {
-		// If it's stalled, ensure reconciling is removed.
-		if sc := conditions.Get(obj, meta.StalledCondition); sc != nil && sc.Status == metav1.ConditionTrue {
-			conditions.Delete(obj, meta.ReconcilingCondition)
-		}
-
-		// Check if it's a successful reconciliation.
-		if result.RequeueAfter == obj.GetRequeueAfter() && result.Requeue == false &&
-			retErr == nil {
-			// Remove reconciling condition if the reconciliation was successful.
-			conditions.Delete(obj, meta.ReconcilingCondition)
-			// If it's not ready even though it's not reconciling or stalled,
-			// set the ready failure message as the error.
-			// Based on isNonStalledSuccess() from internal/reconcile/summarize.
-			if ready := conditions.Get(obj, meta.ReadyCondition); ready != nil &&
-				ready.Status == metav1.ConditionFalse && !conditions.IsStalled(obj) {
-				retErr = errors.New(conditions.GetMessage(obj, meta.ReadyCondition))
-			}
-		}
-
-		// If it's still a successful reconciliation and it's not reconciling or
-		// stalled, mark Ready=True.
-		if !conditions.IsReconciling(obj) && !conditions.IsStalled(obj) &&
-			retErr == nil && result.RequeueAfter == obj.GetRequeueAfter() {
-			conditions.MarkTrue(obj, meta.ReadyCondition, meta.SucceededReason, "Helm repository is ready")
-		}
+		rs := reconcile.NewReconcileSolver(isSuccess, "Helm repository is ready")
+		retErr = rs.Solve(obj, result, retErr)
 
 		// Emit events when object's state changes.
 		ready := conditions.Get(obj, meta.ReadyCondition)
