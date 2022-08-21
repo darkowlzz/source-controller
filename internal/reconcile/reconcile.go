@@ -263,6 +263,17 @@ func ComputeReconcileResultV2(obj conditions.Setter, res ctrl.Result, recErr err
 		if !res.IsZero() && !isSuccess(res, nil) {
 			conditions.Delete(obj, meta.StalledCondition)
 		}
+		// If it's still Stalled, ensure Ready value matches with Stalled.
+		if conditions.IsStalled(obj) {
+			sc := conditions.Get(obj, meta.StalledCondition)
+			conditions.MarkFalse(obj, meta.ReadyCondition, sc.Reason, sc.Message)
+		}
+		// TODO: When the Result requests a requeue and no Ready condition value
+		// is set, the status condition won't have any Ready condition value.
+		// It's difficult to assign a Ready condition value without an error or
+		// an existing Reconciling condition.
+		// Maybe add a default Ready=False value for safeguard in case this
+		// situation becomes common.
 	}
 
 	// After the above, if it's still a successful reconciliation and it's not

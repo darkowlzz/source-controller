@@ -17,14 +17,17 @@ limitations under the License.
 package reconcile
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
 	"time"
 
+	"github.com/darkowlzz/controller-check/status"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
+	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/fluxcd/pkg/apis/meta"
 	"github.com/fluxcd/pkg/runtime/conditions"
@@ -453,12 +456,13 @@ func TestComputeReconcileResultV2(t *testing.T) {
 	}
 
 	tests := []struct {
-		name             string
-		beforeFunc       func(obj conditions.Setter)
-		result           ctrl.Result
-		recErr           error
-		wantErr          bool
-		assertConditions []metav1.Condition
+		name              string
+		beforeFunc        func(obj conditions.Setter)
+		result            ctrl.Result
+		recErr            error
+		statusObservedGen int64
+		wantErr           bool
+		assertConditions  []metav1.Condition
 	}{
 		{
 			name: "result with error, overwrite ready value",
@@ -470,6 +474,20 @@ func TestComputeReconcileResultV2(t *testing.T) {
 			wantErr: true,
 			assertConditions: []metav1.Condition{
 				*conditions.FalseCondition(meta.ReadyCondition, meta.FailedReason, "foo failed"),
+			},
+		},
+		{
+			name: "result with error and reconciling, overwrite ready and reconciling values",
+			beforeFunc: func(obj conditions.Setter) {
+				conditions.MarkReconciling(obj, "SomeReasonX", "some msg X")
+				conditions.MarkFalse(obj, meta.ReadyCondition, meta.FailedReason, "fail-msg")
+			},
+			result:  resultFailed,
+			recErr:  errors.New("foo failed"),
+			wantErr: true,
+			assertConditions: []metav1.Condition{
+				*conditions.FalseCondition(meta.ReadyCondition, meta.FailedReason, "foo failed"),
+				*conditions.TrueCondition(meta.ReconcilingCondition, "SomeReasonX", "some msg X"),
 			},
 		},
 		{
@@ -523,26 +541,32 @@ func TestComputeReconcileResultV2(t *testing.T) {
 			recErr: nil,
 			assertConditions: []metav1.Condition{
 				*conditions.TrueCondition(meta.StalledCondition, "SomeReasonY", "some msg Y"),
-				*conditions.FalseCondition(meta.ReadyCondition, "SomeReasonZ", "some msg Z"),
+				*conditions.FalseCondition(meta.ReadyCondition, "SomeReasonY", "some msg Y"),
 			},
 		},
 		{
 			name: "not success result due to requeue, remove stalled",
 			beforeFunc: func(obj conditions.Setter) {
 				conditions.MarkStalled(obj, "SomeReasonX", "some msg X")
+				conditions.MarkFalse(obj, meta.ReadyCondition, "SomeReasonY", "some msg Y")
 			},
-			result:           resultRequeue,
-			recErr:           nil,
-			assertConditions: []metav1.Condition{},
+			result: resultRequeue,
+			recErr: nil,
+			assertConditions: []metav1.Condition{
+				*conditions.FalseCondition(meta.ReadyCondition, "SomeReasonY", "some msg Y"),
+			},
 		},
 		{
 			name: "not success result due to arbitrary requeueAfter, remove stalled",
 			beforeFunc: func(obj conditions.Setter) {
 				conditions.MarkStalled(obj, "SomeReasonX", "some msg X")
+				conditions.MarkFalse(obj, meta.ReadyCondition, "SomeReasonY", "some msg Y")
 			},
-			result:           ctrl.Result{RequeueAfter: arbitraryInterval},
-			recErr:           nil,
-			assertConditions: []metav1.Condition{},
+			result: ctrl.Result{RequeueAfter: arbitraryInterval},
+			recErr: nil,
+			assertConditions: []metav1.Condition{
+				*conditions.FalseCondition(meta.ReadyCondition, "SomeReasonY", "some msg Y"),
+			},
 		},
 		{
 			name: "not success result and explicit no requeue, keep stalled",
@@ -553,6 +577,7 @@ func TestComputeReconcileResultV2(t *testing.T) {
 			recErr: nil,
 			assertConditions: []metav1.Condition{
 				*conditions.TrueCondition(meta.StalledCondition, "SomeReasonX", "some msg X"),
+				*conditions.FalseCondition(meta.ReadyCondition, "SomeReasonX", "some msg X"),
 			},
 		},
 		{
@@ -560,9 +585,10 @@ func TestComputeReconcileResultV2(t *testing.T) {
 			beforeFunc: func(obj conditions.Setter) {
 				conditions.MarkReconciling(obj, "SomeReasonX", "some msg X")
 			},
-			result:  resultSuccess,
-			recErr:  nil,
-			wantErr: false,
+			result:            resultSuccess,
+			recErr:            nil,
+			statusObservedGen: 1,
+			wantErr:           false,
 			assertConditions: []metav1.Condition{
 				*conditions.TrueCondition(meta.ReadyCondition, meta.SucceededReason, readySuccessMsg),
 			},
@@ -580,11 +606,12 @@ func TestComputeReconcileResultV2(t *testing.T) {
 			},
 		},
 		{
-			name:       "success no other conditions",
-			beforeFunc: func(obj conditions.Setter) {},
-			result:     resultSuccess,
-			recErr:     nil,
-			wantErr:    false,
+			name:              "success no other conditions",
+			beforeFunc:        func(obj conditions.Setter) {},
+			result:            resultSuccess,
+			recErr:            nil,
+			statusObservedGen: 1,
+			wantErr:           false,
 			assertConditions: []metav1.Condition{
 				*conditions.TrueCondition(meta.ReadyCondition, meta.SucceededReason, readySuccessMsg),
 			},
@@ -595,7 +622,21 @@ func TestComputeReconcileResultV2(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			g := NewWithT(t)
 
+			condns := &status.Conditions{
+				NegativePolarity: []string{
+					meta.StalledCondition,
+					meta.ReconcilingCondition,
+				},
+			}
+			checker := status.NewChecker(fakeclient.NewClientBuilder().Build(), condns)
+			checker.DisableFetch = true
+
 			obj := &sourcev1.GitRepository{}
+			// Set non-zero generation in order to set valid observed
+			// generation in status root and conditions.
+			obj.ObjectMeta.Generation = 1
+			// Set status.observedGeneration for valid kstatus result.
+			obj.Status.ObservedGeneration = tt.statusObservedGen
 
 			if tt.beforeFunc != nil {
 				tt.beforeFunc(obj)
@@ -604,6 +645,7 @@ func TestComputeReconcileResultV2(t *testing.T) {
 			gotErr := ComputeReconcileResultV2(obj, tt.result, tt.recErr, isSuccess, readySuccessMsg)
 			g.Expect(gotErr != nil).To(Equal(tt.wantErr))
 			g.Expect(obj.Status.Conditions).To(conditions.MatchConditions(tt.assertConditions))
+			checker.CheckErr(context.TODO(), obj)
 		})
 	}
 }

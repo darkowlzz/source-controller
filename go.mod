@@ -26,7 +26,7 @@ require (
 	// When in doubt (and not using openpgp), use /x/crypto.
 	github.com/ProtonMail/go-crypto v0.0.0-20220812175011-7fcef0dbe794
 	github.com/cyphar/filepath-securejoin v0.2.3
-	github.com/darkowlzz/controller-check v0.0.0-20220325122359-11f5827b7981
+	github.com/darkowlzz/controller-check v0.0.0-20220821212613-0c0d9fe0d72e
 	github.com/distribution/distribution/v3 v3.0.0-20220816150328-6c237953cbbe
 	github.com/docker/cli v20.10.17+incompatible
 	github.com/docker/go-units v0.4.0

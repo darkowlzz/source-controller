@@ -257,8 +257,8 @@ github.com/creack/pty v1.1.11/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ
 github.com/cyphar/filepath-securejoin v0.2.3 h1:YX6ebbZCZP7VkM3scTTokDgBL2TY741X51MTk3ycuNI=
 github.com/cyphar/filepath-securejoin v0.2.3/go.mod h1:aPGpWjXOXUn2NCNjFvBE6aRxGGx79pTxQpKOJNYHHl4=
 github.com/danieljoos/wincred v1.1.0/go.mod h1:XYlo+eRTsVA9aHGp7NGjFkPla4m+DCL7hqDjlFjiygg=
-github.com/darkowlzz/controller-check v0.0.0-20220325122359-11f5827b7981 h1:4GBOSRDmbX+zPT0vV67ay6036Eqz1rh6kZGydsfyh3o=
-github.com/darkowlzz/controller-check v0.0.0-20220325122359-11f5827b7981/go.mod h1:haYO9UW76kUUKpIBbv3ydaU5wZ/7r0yqp61PGzVRSYU=
+github.com/darkowlzz/controller-check v0.0.0-20220821212613-0c0d9fe0d72e h1:eL/9E76oLm3IyJwgGyltgkcyVfg6HmVHsMgi2+KDKvw=
+github.com/darkowlzz/controller-check v0.0.0-20220821212613-0c0d9fe0d72e/go.mod h1:0G1Hgd/faRl0UANlS9s8bULzwcU1+8pY8pEmI61t9d8=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
