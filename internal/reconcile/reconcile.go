@@ -236,15 +236,30 @@ type IsResultSuccess func(ctrl.Result, error) bool
 func ComputeReconcileResultV2(obj conditions.Setter, res ctrl.Result, recErr error, isSuccess IsResultSuccess, readySuccessMsg string) error {
 	// If reconcile error isn't nil, a retry needs to be attempted. Since
 	// it's not stalled situation, ensure Stalled condition is removed.
-	// It's a failure state, reflect the failure error on the ready condition.
 	if recErr != nil {
 		conditions.Delete(obj, meta.StalledCondition)
-		conditions.MarkFalse(obj, meta.ReadyCondition, meta.FailedReason, recErr.Error())
 	}
 
 	// If Stalled=True, ensure Reconciling is removed.
 	if sc := conditions.Get(obj, meta.StalledCondition); sc != nil && sc.Status == metav1.ConditionTrue {
 		conditions.Delete(obj, meta.ReconcilingCondition)
+	}
+
+	// Since conditions.IsReady() depends on the values of Stalled and
+	// Reconciling conditions, after resolving their values above, update Ready
+	// condition based on the reconcile error.
+	// 1. If there's an error and Ready condition is not present in the status,
+	// 		set Ready=False with the error.
+	// 2. If there's an error and Ready=True, mark Ready=False with the error.
+	// This ensure any existing Ready=False value is not overwritten which may
+	// contain precise reason for the failure condition. In absence of precise
+	// reason, set a generic meta.FailedReason in the aforementioned conditions.
+	if recErr != nil {
+		if rd := conditions.Get(obj, meta.ReadyCondition); rd == nil {
+			conditions.MarkFalse(obj, meta.ReadyCondition, meta.FailedReason, recErr.Error())
+		} else if conditions.IsReady(obj) {
+			conditions.MarkFalse(obj, meta.ReadyCondition, meta.FailedReason, recErr.Error())
+		}
 	}
 
 	// If the result is success, ensure Reconciling is removed.

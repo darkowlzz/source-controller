@@ -465,32 +465,6 @@ func TestComputeReconcileResultV2(t *testing.T) {
 		assertConditions  []metav1.Condition
 	}{
 		{
-			name: "result with error, overwrite ready value",
-			beforeFunc: func(obj conditions.Setter) {
-				conditions.MarkFalse(obj, meta.ReadyCondition, meta.FailedReason, "fail-msg")
-			},
-			result:  resultFailed,
-			recErr:  errors.New("foo failed"),
-			wantErr: true,
-			assertConditions: []metav1.Condition{
-				*conditions.FalseCondition(meta.ReadyCondition, meta.FailedReason, "foo failed"),
-			},
-		},
-		{
-			name: "result with error and reconciling, overwrite ready and reconciling values",
-			beforeFunc: func(obj conditions.Setter) {
-				conditions.MarkReconciling(obj, "SomeReasonX", "some msg X")
-				conditions.MarkFalse(obj, meta.ReadyCondition, meta.FailedReason, "fail-msg")
-			},
-			result:  resultFailed,
-			recErr:  errors.New("foo failed"),
-			wantErr: true,
-			assertConditions: []metav1.Condition{
-				*conditions.FalseCondition(meta.ReadyCondition, meta.FailedReason, "foo failed"),
-				*conditions.TrueCondition(meta.ReconcilingCondition, "SomeReasonX", "some msg X"),
-			},
-		},
-		{
 			name: "result with error and stalled",
 			beforeFunc: func(obj conditions.Setter) {
 				conditions.MarkStalled(obj, "SomeReasonX", "some msg X")
@@ -519,7 +493,29 @@ func TestComputeReconcileResultV2(t *testing.T) {
 			},
 		},
 		{
-			name: "result with error, ready=True",
+			name:       "result with error, no ready value, set ready value",
+			beforeFunc: func(obj conditions.Setter) {},
+			result:     resultFailed,
+			recErr:     errors.New("foo failed"),
+			wantErr:    true,
+			assertConditions: []metav1.Condition{
+				*conditions.FalseCondition(meta.ReadyCondition, meta.FailedReason, "foo failed"),
+			},
+		},
+		{
+			name: "result with error, false ready value, no overwrite",
+			beforeFunc: func(obj conditions.Setter) {
+				conditions.MarkFalse(obj, meta.ReadyCondition, "SomeReasonX", "fail-msg")
+			},
+			result:  resultFailed,
+			recErr:  errors.New("foo failed"),
+			wantErr: true,
+			assertConditions: []metav1.Condition{
+				*conditions.FalseCondition(meta.ReadyCondition, "SomeReasonX", "fail-msg"),
+			},
+		},
+		{
+			name: "result with error, true ready value, overwrite",
 			beforeFunc: func(obj conditions.Setter) {
 				conditions.MarkTrue(obj, meta.ReadyCondition, meta.SucceededReason, readySuccessMsg)
 			},
@@ -531,7 +527,21 @@ func TestComputeReconcileResultV2(t *testing.T) {
 			},
 		},
 		{
-			name: "stalled and reconciling",
+			name: "result with error, not ready and reconciling, no change",
+			beforeFunc: func(obj conditions.Setter) {
+				conditions.MarkReconciling(obj, "SomeReasonX", "some msg X")
+				conditions.MarkFalse(obj, meta.ReadyCondition, "SomeReasonY", "some msg Y")
+			},
+			result:  resultFailed,
+			recErr:  errors.New("foo failed"),
+			wantErr: true,
+			assertConditions: []metav1.Condition{
+				*conditions.FalseCondition(meta.ReadyCondition, "SomeReasonY", "some msg Y"),
+				*conditions.TrueCondition(meta.ReconcilingCondition, "SomeReasonX", "some msg X"),
+			},
+		},
+		{
+			name: "stalled and reconciling, remove reconciling, overwrite ready with stalled",
 			beforeFunc: func(obj conditions.Setter) {
 				conditions.MarkTrue(obj, meta.ReconcilingCondition, "SomeReasonX", "some msg X")
 				conditions.MarkTrue(obj, meta.StalledCondition, "SomeReasonY", "some msg Y")
@@ -569,7 +579,7 @@ func TestComputeReconcileResultV2(t *testing.T) {
 			},
 		},
 		{
-			name: "not success result and explicit no requeue, keep stalled",
+			name: "not success result and explicit no requeue, keep stalled, add Ready=False",
 			beforeFunc: func(obj conditions.Setter) {
 				conditions.MarkStalled(obj, "SomeReasonX", "some msg X")
 			},
@@ -581,7 +591,7 @@ func TestComputeReconcileResultV2(t *testing.T) {
 			},
 		},
 		{
-			name: "success result with reconciling and ready",
+			name: "success result with reconciling and ready, remove reconciling, Ready=True",
 			beforeFunc: func(obj conditions.Setter) {
 				conditions.MarkReconciling(obj, "SomeReasonX", "some msg X")
 			},
@@ -594,7 +604,7 @@ func TestComputeReconcileResultV2(t *testing.T) {
 			},
 		},
 		{
-			name: "success results but not ready",
+			name: "success results but not ready, Ready=False",
 			beforeFunc: func(obj conditions.Setter) {
 				conditions.MarkFalse(obj, meta.ReadyCondition, meta.FailedReason, "fail-msg")
 			},
@@ -606,7 +616,7 @@ func TestComputeReconcileResultV2(t *testing.T) {
 			},
 		},
 		{
-			name:              "success no other conditions",
+			name:              "success no other conditions, Ready=True",
 			beforeFunc:        func(obj conditions.Setter) {},
 			result:            resultSuccess,
 			recErr:            nil,
