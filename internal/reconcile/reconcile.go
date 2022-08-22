@@ -28,6 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	serror "github.com/fluxcd/source-controller/internal/error"
+	"github.com/fluxcd/source-controller/internal/object"
 )
 
 // Result is a type for creating an abstraction for the controller-runtime
@@ -232,7 +233,8 @@ type IsResultSuccess func(ctrl.Result, error) bool
 // ctrl.Result, error from the reconciliation, and a conditions.Setter with
 // conditions, and analyzes them to return a reconciliation error. It mutates
 // the object status conditions based on the input to ensure the conditions are
-// summarized based on kstatus.
+// summarized based on kstatus. It also checks for any reconcile annotation in
+// the object metadata and adds it to the status as LastHandledReconcileAt.
 func ComputeReconcileResultV2(obj conditions.Setter, res ctrl.Result, recErr error, isSuccess IsResultSuccess, readySuccessMsg string) error {
 	// If reconcile error isn't nil, a retry needs to be attempted. Since
 	// it's not stalled situation, ensure Stalled condition is removed.
@@ -296,5 +298,30 @@ func ComputeReconcileResultV2(obj conditions.Setter, res ctrl.Result, recErr err
 	if isSuccess(res, recErr) && !conditions.IsReconciling(obj) && !conditions.IsStalled(obj) {
 		conditions.MarkTrue(obj, meta.ReadyCondition, meta.SucceededReason, readySuccessMsg)
 	}
+
+	// If a reconcile annotation value is found, set it in the object status as
+	// status.lastHandledReconcileAt.
+	if v, ok := meta.ReconcileAnnotationValue(obj.GetAnnotations()); ok {
+		object.SetStatusLastHandledReconcileAt(obj, v)
+	}
+
 	return recErr
+}
+
+// AddPatchOptionsV2 adds patch options to a given patch option based on the
+// passed conditions.Setter, ownedConditions and fieldOwner, and returns the
+// patch options.
+// This must be run on a kstatus compliant status. Non-kstatus compliant status
+// may result in unexpected patch option result.
+func AddPatchOptionsV2(obj conditions.Setter, opts []patch.Option, ownedConditions []string, fieldOwner string) []patch.Option {
+	opts = append(opts,
+		patch.WithOwnedConditions{Conditions: ownedConditions},
+		patch.WithFieldOwner(fieldOwner),
+	)
+	// Set status observed generation option if the object is stalled, or
+	// if the object is ready, i.e. success result.
+	if conditions.IsStalled(obj) || conditions.IsReady(obj) {
+		opts = append(opts, patch.WithStatusObservedGeneration{})
+	}
+	return opts
 }

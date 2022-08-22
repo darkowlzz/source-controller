@@ -456,13 +456,14 @@ func TestComputeReconcileResultV2(t *testing.T) {
 	}
 
 	tests := []struct {
-		name              string
-		beforeFunc        func(obj conditions.Setter)
-		result            ctrl.Result
-		recErr            error
-		statusObservedGen int64
-		wantErr           bool
-		assertConditions  []metav1.Condition
+		name                       string
+		beforeFunc                 func(obj conditions.Setter)
+		result                     ctrl.Result
+		recErr                     error
+		statusObservedGen          int64
+		wantErr                    bool
+		wantLastHandledReconcileAt string
+		assertConditions           []metav1.Condition
 	}{
 		{
 			name: "result with error and stalled",
@@ -626,6 +627,21 @@ func TestComputeReconcileResultV2(t *testing.T) {
 				*conditions.TrueCondition(meta.ReadyCondition, meta.SucceededReason, readySuccessMsg),
 			},
 		},
+		{
+			name: "reconcile annotation",
+			beforeFunc: func(obj conditions.Setter) {
+				obj.SetAnnotations(map[string]string{meta.ReconcileRequestAnnotation: "foo"})
+				conditions.MarkTrue(obj, meta.ReadyCondition, meta.SucceededReason, readySuccessMsg)
+			},
+			result:                     resultSuccess,
+			recErr:                     nil,
+			statusObservedGen:          1,
+			wantErr:                    false,
+			wantLastHandledReconcileAt: "foo",
+			assertConditions: []metav1.Condition{
+				*conditions.TrueCondition(meta.ReadyCondition, meta.SucceededReason, readySuccessMsg),
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -655,7 +671,96 @@ func TestComputeReconcileResultV2(t *testing.T) {
 			gotErr := ComputeReconcileResultV2(obj, tt.result, tt.recErr, isSuccess, readySuccessMsg)
 			g.Expect(gotErr != nil).To(Equal(tt.wantErr))
 			g.Expect(obj.Status.Conditions).To(conditions.MatchConditions(tt.assertConditions))
+			if tt.wantLastHandledReconcileAt != "" {
+				g.Expect(obj.Status.LastHandledReconcileAt).To(Equal(tt.wantLastHandledReconcileAt))
+			}
+			// kstatus comformance check.
 			checker.CheckErr(context.TODO(), obj)
+		})
+	}
+}
+
+func TestAddPatchOptionsV2(t *testing.T) {
+	tests := []struct {
+		name                         string
+		beforeFunc                   func(obj conditions.Setter)
+		fieldOwner                   string
+		ownedConditions              []string
+		wantFieldOwner               string
+		wantOwnedConditions          []string
+		wantIncludeStatusObservedGen bool
+	}{
+		{
+			name:                         "no conditions, no field owner",
+			wantFieldOwner:               "",
+			wantOwnedConditions:          nil,
+			wantIncludeStatusObservedGen: false,
+		},
+		{
+			name:                "owned conditions and field owner",
+			fieldOwner:          "foo-ctrl",
+			ownedConditions:     []string{"A", "B"},
+			wantFieldOwner:      "foo-ctrl",
+			wantOwnedConditions: []string{"A", "B"},
+		},
+		{
+			name: "reconciling=True, Ready=False status conditions",
+			beforeFunc: func(obj conditions.Setter) {
+				conditions.MarkReconciling(obj, "SomeReasonX", "some msg X")
+				conditions.MarkFalse(obj, meta.ReadyCondition, "SomeReasonY", "some msg Y")
+			},
+			wantIncludeStatusObservedGen: false,
+		},
+		{
+			name: "stalled=True, Ready=False status conditions",
+			beforeFunc: func(obj conditions.Setter) {
+				conditions.MarkStalled(obj, "SomeReasonX", "some msg X")
+				conditions.MarkFalse(obj, meta.ReadyCondition, "SomeReasonY", "some msg Y")
+			},
+			wantIncludeStatusObservedGen: true,
+		},
+		{
+			name: "Ready=True, no other status condition",
+			beforeFunc: func(obj conditions.Setter) {
+				conditions.MarkTrue(obj, meta.ReadyCondition, meta.SucceededReason, "success")
+			},
+			wantIncludeStatusObservedGen: true,
+		},
+		{
+			name: "owned conditions, field owner and Stalled=True, Ready=False",
+			beforeFunc: func(obj conditions.Setter) {
+				conditions.MarkStalled(obj, "SomeReasonX", "some msg X")
+				conditions.MarkFalse(obj, meta.ReadyCondition, "SomeReasonY", "some msg Y")
+			},
+			fieldOwner:                   "foo-ctrl",
+			ownedConditions:              []string{meta.StalledCondition, meta.ReadyCondition},
+			wantFieldOwner:               "foo-ctrl",
+			wantOwnedConditions:          []string{meta.StalledCondition, meta.ReadyCondition},
+			wantIncludeStatusObservedGen: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewWithT(t)
+
+			obj := &sourcev1.GitRepository{}
+			opts := []patch.Option{}
+
+			if tt.beforeFunc != nil {
+				tt.beforeFunc(obj)
+			}
+
+			opts = AddPatchOptionsV2(obj, opts, tt.ownedConditions, tt.fieldOwner)
+
+			// Apply the options on a patch helper.
+			helperOpts := &patch.HelperOptions{}
+			for _, opt := range opts {
+				opt.ApplyToHelper(helperOpts)
+			}
+			g.Expect(helperOpts.FieldOwner).To(Equal(tt.wantFieldOwner))
+			g.Expect(helperOpts.OwnedConditions).To(Equal(tt.wantOwnedConditions))
+			g.Expect(helperOpts.IncludeStatusObservedGeneration).To(Equal(tt.wantIncludeStatusObservedGen))
 		})
 	}
 }
