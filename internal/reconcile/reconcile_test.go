@@ -446,6 +446,31 @@ func TestComputeReconcileResultV2(t *testing.T) {
 	resultFailed := ctrl.Result{}
 	resultRequeue := ctrl.Result{Requeue: true}
 
+	summarizeReadyConditions := Conditions{
+		Target: meta.ReadyCondition,
+		Owned: []string{
+			sourcev1.FetchFailedCondition,
+			sourcev1.ArtifactOutdatedCondition,
+			sourcev1.ArtifactInStorageCondition,
+			meta.ReadyCondition,
+			meta.ReconcilingCondition,
+			meta.StalledCondition,
+		},
+		Summarize: []string{
+			sourcev1.FetchFailedCondition,
+			sourcev1.ArtifactOutdatedCondition,
+			sourcev1.ArtifactInStorageCondition,
+			meta.StalledCondition,
+			meta.ReconcilingCondition,
+		},
+		NegativePolarity: []string{
+			sourcev1.FetchFailedCondition,
+			sourcev1.ArtifactOutdatedCondition,
+			meta.StalledCondition,
+			meta.ReconcilingCondition,
+		},
+	}
+
 	// Success is no error, no immediate or arbitrary requeue in the result.
 	// Only requeue at the success interval.
 	isSuccess := func(res ctrl.Result, err error) bool {
@@ -457,6 +482,7 @@ func TestComputeReconcileResultV2(t *testing.T) {
 
 	tests := []struct {
 		name                       string
+		summarizeConditions        []Conditions
 		beforeFunc                 func(obj conditions.Setter)
 		result                     ctrl.Result
 		recErr                     error
@@ -642,6 +668,102 @@ func TestComputeReconcileResultV2(t *testing.T) {
 				*conditions.TrueCondition(meta.ReadyCondition, meta.SucceededReason, readySuccessMsg),
 			},
 		},
+		// NOTE: The following is a situation in which no Ready condition is
+		// present in the status after result computation.
+		// {
+		// 	name:             "no ready condition",
+		// 	result:           resultRequeue,
+		// 	recErr:           nil,
+		// 	assertConditions: []metav1.Condition{},
+		// },
+		{
+			name:                "success with summarize conditions",
+			summarizeConditions: []Conditions{summarizeReadyConditions},
+			beforeFunc: func(obj conditions.Setter) {
+				conditions.MarkTrue(obj, sourcev1.ArtifactInStorageCondition, meta.SucceededReason, "stored artifact")
+			},
+			result:            resultSuccess,
+			recErr:            nil,
+			statusObservedGen: 1,
+			assertConditions: []metav1.Condition{
+				*conditions.TrueCondition(meta.ReadyCondition, meta.SucceededReason, "stored artifact"),
+				*conditions.TrueCondition(sourcev1.ArtifactInStorageCondition, meta.SucceededReason, "stored artifact"),
+			},
+		},
+		{
+			name:                "failure with negative polarity conditions summary",
+			summarizeConditions: []Conditions{summarizeReadyConditions},
+			beforeFunc: func(obj conditions.Setter) {
+				conditions.MarkTrue(obj, sourcev1.FetchFailedCondition, meta.FailedReason, "auth failed")
+			},
+			result:  resultFailed,
+			recErr:  errors.New("secret not found"),
+			wantErr: true,
+			assertConditions: []metav1.Condition{
+				*conditions.FalseCondition(meta.ReadyCondition, meta.FailedReason, "auth failed"),
+				*conditions.TrueCondition(sourcev1.FetchFailedCondition, meta.FailedReason, "auth failed"),
+			},
+		},
+		{
+			name:                "reconciling and positive polarity conditions summary",
+			summarizeConditions: []Conditions{summarizeReadyConditions},
+			beforeFunc: func(obj conditions.Setter) {
+				conditions.MarkReconciling(obj, "NewArtifact", "new artifact")
+				conditions.MarkTrue(obj, sourcev1.ArtifactInStorageCondition, meta.SucceededReason, "stored artifact")
+			},
+			result:            resultSuccess,
+			recErr:            nil,
+			statusObservedGen: 1,
+			assertConditions: []metav1.Condition{
+				*conditions.TrueCondition(meta.ReadyCondition, meta.SucceededReason, "stored artifact"),
+				*conditions.TrueCondition(sourcev1.ArtifactInStorageCondition, meta.SucceededReason, "stored artifact"),
+			},
+		},
+		{
+			name:                "stalled with artifact in storage summary",
+			summarizeConditions: []Conditions{summarizeReadyConditions},
+			beforeFunc: func(obj conditions.Setter) {
+				conditions.MarkStalled(obj, "InvalidURL", "invalid URL")
+				conditions.MarkTrue(obj, sourcev1.ArtifactInStorageCondition, meta.SucceededReason, "stored artifact")
+			},
+			result:            resultStalled,
+			recErr:            nil,
+			statusObservedGen: 1,
+			assertConditions: []metav1.Condition{
+				*conditions.FalseCondition(meta.ReadyCondition, "InvalidURL", "invalid URL"),
+				*conditions.TrueCondition(meta.StalledCondition, "InvalidURL", "invalid URL"),
+				*conditions.TrueCondition(sourcev1.ArtifactInStorageCondition, meta.SucceededReason, "stored artifact"),
+			},
+		},
+		{
+			name:                "reconciling, stalled with conditions summary",
+			summarizeConditions: []Conditions{summarizeReadyConditions},
+			beforeFunc: func(obj conditions.Setter) {
+				conditions.MarkTrue(obj, meta.ReconcilingCondition, "SomeReasonX", "some msg X")
+				conditions.MarkTrue(obj, meta.StalledCondition, "SomeReasonY", "some msg Y")
+			},
+			result:            resultStalled,
+			recErr:            nil,
+			statusObservedGen: 1,
+			assertConditions: []metav1.Condition{
+				*conditions.FalseCondition(meta.ReadyCondition, "SomeReasonY", "some msg Y"),
+				*conditions.TrueCondition(meta.StalledCondition, "SomeReasonY", "some msg Y"),
+			},
+		},
+		{
+			name:                "not ready after summarize and result is success, should set error",
+			summarizeConditions: []Conditions{summarizeReadyConditions},
+			beforeFunc: func(obj conditions.Setter) {
+				conditions.MarkTrue(obj, sourcev1.ArtifactOutdatedCondition, meta.FailedReason, "outdated")
+			},
+			result:  resultSuccess,
+			recErr:  nil,
+			wantErr: true,
+			assertConditions: []metav1.Condition{
+				*conditions.FalseCondition(meta.ReadyCondition, meta.FailedReason, "outdated"),
+				*conditions.TrueCondition(sourcev1.ArtifactOutdatedCondition, meta.FailedReason, "outdated"),
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -668,7 +790,8 @@ func TestComputeReconcileResultV2(t *testing.T) {
 				tt.beforeFunc(obj)
 			}
 
-			gotErr := ComputeReconcileResultV2(obj, tt.result, tt.recErr, isSuccess, readySuccessMsg)
+			rs := NewReconcileSolver(isSuccess, readySuccessMsg, tt.summarizeConditions...)
+			gotErr := rs.Solve(obj, tt.result, tt.recErr)
 			g.Expect(gotErr != nil).To(Equal(tt.wantErr))
 			g.Expect(obj.Status.Conditions).To(conditions.MatchConditions(tt.assertConditions))
 			if tt.wantLastHandledReconcileAt != "" {
@@ -680,7 +803,7 @@ func TestComputeReconcileResultV2(t *testing.T) {
 	}
 }
 
-func TestAddPatchOptionsV2(t *testing.T) {
+func TestAddPatchOptions(t *testing.T) {
 	tests := []struct {
 		name                         string
 		beforeFunc                   func(obj conditions.Setter)
@@ -751,7 +874,7 @@ func TestAddPatchOptionsV2(t *testing.T) {
 				tt.beforeFunc(obj)
 			}
 
-			opts = AddPatchOptionsV2(obj, opts, tt.ownedConditions, tt.fieldOwner)
+			opts = AddPatchOptions(obj, opts, tt.ownedConditions, tt.fieldOwner)
 
 			// Apply the options on a patch helper.
 			helperOpts := &patch.HelperOptions{}

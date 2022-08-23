@@ -25,11 +25,26 @@ import (
 	"github.com/fluxcd/pkg/apis/meta"
 	"github.com/fluxcd/pkg/runtime/conditions"
 	"github.com/fluxcd/pkg/runtime/patch"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	serror "github.com/fluxcd/source-controller/internal/error"
 	"github.com/fluxcd/source-controller/internal/object"
 )
+
+// Conditions contains all the conditions information needed to summarize the
+// target condition.
+type Conditions struct {
+	// Target is the target condition, e.g.: Ready.
+	Target string
+	// Owned conditions are the conditions owned by the reconciler for this
+	// target condition.
+	Owned []string
+	// Summarize conditions are the conditions that the target condition depends
+	// on.
+	Summarize []string
+	// NegativePolarity conditions are the conditions in Summarize with negative
+	// polarity.
+	NegativePolarity []string
+}
 
 // Result is a type for creating an abstraction for the controller-runtime
 // reconcile Result to simplify the Result values.
@@ -229,75 +244,106 @@ func addPatchOptionWithStatusObservedGeneration(obj conditions.Setter, opts []pa
 // successful reconciliation result.
 type IsResultSuccess func(ctrl.Result, error) bool
 
-// ComputeReconcileResultV2 computes the result of reconciliation. It takes
-// ctrl.Result, error from the reconciliation, and a conditions.Setter with
-// conditions, and analyzes them to return a reconciliation error. It mutates
-// the object status conditions based on the input to ensure the conditions are
-// summarized based on kstatus. It also checks for any reconcile annotation in
-// the object metadata and adds it to the status as LastHandledReconcileAt.
-func ComputeReconcileResultV2(obj conditions.Setter, res ctrl.Result, recErr error, isSuccess IsResultSuccess, readySuccessMsg string) error {
+// ReconcileSolver solves the results of reconciliation to provide a kstatus
+// compliant object status and appropriate runtime results based on the status
+// observations.
+type ReconcileSolver struct {
+	isSuccess       IsResultSuccess
+	readySuccessMsg string
+	conditions      []Conditions
+}
+
+// NewReconcileSolver returns a new ReconcileSolver.
+func NewReconcileSolver(isSuccess IsResultSuccess, readySuccessMsg string, conditions ...Conditions) *ReconcileSolver {
+	return &ReconcileSolver{
+		isSuccess:       isSuccess,
+		readySuccessMsg: readySuccessMsg,
+		conditions:      conditions,
+	}
+}
+
+// Solve computes the result of reconciliation. It takes ctrl.Result, error from
+// the reconciliation, and a conditions.Setter with conditions, and analyzes
+// them to return a reconciliation error. It mutates the object status
+// conditions based on the input to ensure the conditions are compliant with
+// kstatus. If conditions are passed for summarization, it summarizes the status
+// conditions such that the result is kstatus compliant. It also checks for any
+// reconcile annotation in the object metadata and adds it to the status as
+// LastHandledReconcileAt.
+func (rs ReconcileSolver) Solve(obj conditions.Setter, res ctrl.Result, recErr error) error {
+	// Store the success result of the reconciliation taking the error value in
+	// consideration.
+	successResult := rs.isSuccess(res, recErr)
+
 	// If reconcile error isn't nil, a retry needs to be attempted. Since
 	// it's not stalled situation, ensure Stalled condition is removed.
 	if recErr != nil {
 		conditions.Delete(obj, meta.StalledCondition)
 	}
 
-	// If Stalled=True, ensure Reconciling is removed.
-	if sc := conditions.Get(obj, meta.StalledCondition); sc != nil && sc.Status == metav1.ConditionTrue {
+	if !successResult {
+		// ctrl.Result is expected to be zero when stalled. If the result isn't
+		// zero and not success even without considering the error value, a
+		// requeue is requested in the ctrl.Result, it is not a stalled
+		// situation. Ensure Stalled condition is removed.
+		if !res.IsZero() && !rs.isSuccess(res, nil) {
+			conditions.Delete(obj, meta.StalledCondition)
+		}
+		// If it's still Stalled, ensure Ready value matches with Stalled.
+		if conditions.IsTrue(obj, meta.StalledCondition) {
+			sc := conditions.Get(obj, meta.StalledCondition)
+			conditions.MarkFalse(obj, meta.ReadyCondition, sc.Reason, sc.Message)
+		}
+	}
+
+	// If it's a successful result or Stalled=True, ensure Reconciling is
+	// removed.
+	if successResult || conditions.IsTrue(obj, meta.StalledCondition) {
 		conditions.Delete(obj, meta.ReconcilingCondition)
 	}
 
 	// Since conditions.IsReady() depends on the values of Stalled and
 	// Reconciling conditions, after resolving their values above, update Ready
 	// condition based on the reconcile error.
-	// 1. If there's an error and Ready condition is not present in the status,
-	// 		set Ready=False with the error.
-	// 2. If there's an error and Ready=True, mark Ready=False with the error.
-	// This ensure any existing Ready=False value is not overwritten which may
-	// contain precise reason for the failure condition. In absence of precise
-	// reason, set a generic meta.FailedReason in the aforementioned conditions.
+	// If there's a reconcile error and Ready=True or Ready is unknown, mark
+	// Ready=False with the reconcile error. If Ready is already False with a
+	// reason, preserve the value.
 	if recErr != nil {
-		if rd := conditions.Get(obj, meta.ReadyCondition); rd == nil {
-			conditions.MarkFalse(obj, meta.ReadyCondition, meta.FailedReason, recErr.Error())
-		} else if conditions.IsReady(obj) {
+		if conditions.IsUnknown(obj, meta.ReadyCondition) || conditions.IsReady(obj) {
 			conditions.MarkFalse(obj, meta.ReadyCondition, meta.FailedReason, recErr.Error())
 		}
 	}
 
-	// If the result is success, ensure Reconciling is removed.
-	// But if Ready!=True, set error value to be the Ready failure message.
-	if isSuccess(res, recErr) {
-		conditions.Delete(obj, meta.ReconcilingCondition)
-		if ready := conditions.Get(obj, meta.ReadyCondition); ready != nil &&
-			ready.Status == metav1.ConditionFalse && !conditions.IsStalled(obj) {
-			recErr = errors.New(conditions.GetMessage(obj, meta.ReadyCondition))
-		}
-	} else {
-		// ctrl.Result is expected to be zero when stalled. If the result isn't
-		// zero and not success even without considering the error value, a
-		// requeue is requested in the ctrl.Result, not a stalled situation.
-		// Ensure Stalled condition is removed.
-		if !res.IsZero() && !isSuccess(res, nil) {
-			conditions.Delete(obj, meta.StalledCondition)
-		}
-		// If it's still Stalled, ensure Ready value matches with Stalled.
-		if conditions.IsStalled(obj) {
-			sc := conditions.Get(obj, meta.StalledCondition)
-			conditions.MarkFalse(obj, meta.ReadyCondition, sc.Reason, sc.Message)
-		}
-		// TODO: When the Result requests a requeue and no Ready condition value
-		// is set, the status condition won't have any Ready condition value.
-		// It's difficult to assign a Ready condition value without an error or
-		// an existing Reconciling condition.
-		// Maybe add a default Ready=False value for safeguard in case this
-		// situation becomes common.
+	// If custom conditions are provided, summarize them with the Reconciling
+	// and Stalled condition changes above.
+	for _, c := range rs.conditions {
+		conditions.SetSummary(obj,
+			c.Target,
+			conditions.WithConditions(c.Summarize...),
+			conditions.WithNegativePolarityConditions(c.NegativePolarity...),
+		)
 	}
 
-	// After the above, if it's still a successful reconciliation and it's not
-	// reconciling or stalled, mark Ready=True.
-	if isSuccess(res, recErr) && !conditions.IsReconciling(obj) && !conditions.IsStalled(obj) {
-		conditions.MarkTrue(obj, meta.ReadyCondition, meta.SucceededReason, readySuccessMsg)
+	// If the result is success, but Ready is explicitly False (not unknown,
+	// with not Ready condition message), and it's not Stalled, set error value
+	// to be the Ready failure message.
+	if successResult && !conditions.IsUnknown(obj, meta.ReadyCondition) && conditions.IsFalse(obj, meta.ReadyCondition) && !conditions.IsStalled(obj) {
+		recErr = errors.New(conditions.GetMessage(obj, meta.ReadyCondition))
 	}
+
+	// After the above, if Ready condition is not set, it's still a successful
+	// reconciliation and it's not reconciling or stalled, mark Ready=True.
+	// This tries to preserve any Ready value set previously.
+	if conditions.IsUnknown(obj, meta.ReadyCondition) && rs.isSuccess(res, recErr) && !conditions.IsReconciling(obj) && !conditions.IsStalled(obj) {
+		conditions.MarkTrue(obj, meta.ReadyCondition, meta.SucceededReason, rs.readySuccessMsg)
+	}
+
+	// TODO: When the Result requests a requeue and no Ready condition value
+	// is set, the status condition won't have any Ready condition value.
+	// It's difficult to assign a Ready condition value without an error or
+	// an existing Reconciling condition.
+	// Maybe add a default Ready=False value for safeguard in case this
+	// situation becomes common.
 
 	// If a reconcile annotation value is found, set it in the object status as
 	// status.lastHandledReconcileAt.
@@ -308,12 +354,12 @@ func ComputeReconcileResultV2(obj conditions.Setter, res ctrl.Result, recErr err
 	return recErr
 }
 
-// AddPatchOptionsV2 adds patch options to a given patch option based on the
+// AddPatchOptions adds patch options to a given patch option based on the
 // passed conditions.Setter, ownedConditions and fieldOwner, and returns the
 // patch options.
 // This must be run on a kstatus compliant status. Non-kstatus compliant status
 // may result in unexpected patch option result.
-func AddPatchOptionsV2(obj conditions.Setter, opts []patch.Option, ownedConditions []string, fieldOwner string) []patch.Option {
+func AddPatchOptions(obj conditions.Setter, opts []patch.Option, ownedConditions []string, fieldOwner string) []patch.Option {
 	opts = append(opts,
 		patch.WithOwnedConditions{Conditions: ownedConditions},
 		patch.WithFieldOwner(fieldOwner),
