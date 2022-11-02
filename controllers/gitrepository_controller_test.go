@@ -251,16 +251,16 @@ func TestGitRepositoryReconciler_reconcileSource_authStrategy(t *testing.T) {
 		assertConditions      []metav1.Condition
 	}{
 		{
-			name:     "HTTP without secretRef makes ArtifactOutdated=True",
+			name:     "HTTP without secretRef makes Reconciling=True",
 			protocol: "http",
 			want:     sreconcile.ResultSuccess,
 			assertConditions: []metav1.Condition{
-				*conditions.TrueCondition(sourcev1.ArtifactOutdatedCondition, "NewRevision", "new upstream revision 'master/<commit>'"),
-				*conditions.TrueCondition(meta.ReconcilingCondition, "NewRevision", "new upstream revision 'master/<commit>'"),
+				*conditions.TrueCondition(meta.ReconcilingCondition, meta.ProgressingReason, "building artifact: new upstream revision 'master/<commit>'"),
+				*conditions.UnknownCondition(meta.ReadyCondition, meta.ProgressingReason, "building artifact: new upstream revision 'master/<commit>'"),
 			},
 		},
 		{
-			name:     "HTTP with Basic Auth secret makes ArtifactOutdated=True",
+			name:     "HTTP with Basic Auth secret makes Reconciling=True",
 			protocol: "http",
 			server: options{
 				username: "git",
@@ -280,12 +280,12 @@ func TestGitRepositoryReconciler_reconcileSource_authStrategy(t *testing.T) {
 			},
 			want: sreconcile.ResultSuccess,
 			assertConditions: []metav1.Condition{
-				*conditions.TrueCondition(sourcev1.ArtifactOutdatedCondition, "NewRevision", "new upstream revision 'master/<commit>'"),
-				*conditions.TrueCondition(meta.ReconcilingCondition, "NewRevision", "new upstream revision 'master/<commit>'"),
+				*conditions.TrueCondition(meta.ReconcilingCondition, meta.ProgressingReason, "building artifact: new upstream revision 'master/<commit>'"),
+				*conditions.UnknownCondition(meta.ReadyCondition, meta.ProgressingReason, "building artifact: new upstream revision 'master/<commit>'"),
 			},
 		},
 		{
-			name:     "HTTPS with CAFile secret makes ArtifactOutdated=True",
+			name:     "HTTPS with CAFile secret makes Reconciling=True",
 			protocol: "https",
 			server: options{
 				publicKey:  tlsPublicKey,
@@ -305,8 +305,8 @@ func TestGitRepositoryReconciler_reconcileSource_authStrategy(t *testing.T) {
 			},
 			want: sreconcile.ResultSuccess,
 			assertConditions: []metav1.Condition{
-				*conditions.TrueCondition(sourcev1.ArtifactOutdatedCondition, "NewRevision", "new upstream revision 'master/<commit>'"),
-				*conditions.TrueCondition(meta.ReconcilingCondition, "NewRevision", "new upstream revision 'master/<commit>'"),
+				*conditions.TrueCondition(meta.ReconcilingCondition, meta.ProgressingReason, "building artifact: new upstream revision 'master/<commit>'"),
+				*conditions.UnknownCondition(meta.ReadyCondition, meta.ProgressingReason, "building artifact: new upstream revision 'master/<commit>'"),
 			},
 		},
 		{
@@ -328,6 +328,8 @@ func TestGitRepositoryReconciler_reconcileSource_authStrategy(t *testing.T) {
 			},
 			beforeFunc: func(obj *sourcev1.GitRepository) {
 				obj.Spec.SecretRef = &meta.LocalObjectReference{Name: "invalid-ca"}
+				conditions.MarkReconciling(obj, meta.ProgressingReason, "foo")
+				conditions.MarkUnknown(obj, meta.ReadyCondition, meta.ProgressingReason, "foo")
 			},
 			wantErr: true,
 			assertConditions: []metav1.Condition{
@@ -337,6 +339,8 @@ func TestGitRepositoryReconciler_reconcileSource_authStrategy(t *testing.T) {
 				//
 				// Trimming the expected error message for consistent results.
 				*conditions.TrueCondition(sourcev1.FetchFailedCondition, sourcev1.GitOperationFailedReason, "x509: "),
+				*conditions.TrueCondition(meta.ReconcilingCondition, meta.ProgressingReason, "foo"),
+				*conditions.UnknownCondition(meta.ReadyCondition, meta.ProgressingReason, "foo"),
 			},
 		},
 		{
@@ -358,14 +362,18 @@ func TestGitRepositoryReconciler_reconcileSource_authStrategy(t *testing.T) {
 			},
 			beforeFunc: func(obj *sourcev1.GitRepository) {
 				obj.Spec.SecretRef = &meta.LocalObjectReference{Name: "invalid-ca"}
+				conditions.MarkReconciling(obj, meta.ProgressingReason, "foo")
+				conditions.MarkUnknown(obj, meta.ReadyCondition, meta.ProgressingReason, "foo")
 			},
 			wantErr: true,
 			assertConditions: []metav1.Condition{
 				*conditions.TrueCondition(sourcev1.FetchFailedCondition, sourcev1.GitOperationFailedReason, "failed to checkout and determine revision: unable to fetch-connect to remote '<url>': PEM CA bundle could not be appended to x509 certificate pool"),
+				*conditions.TrueCondition(meta.ReconcilingCondition, meta.ProgressingReason, "foo"),
+				*conditions.UnknownCondition(meta.ReadyCondition, meta.ProgressingReason, "foo"),
 			},
 		},
 		{
-			name:     "SSH with private key secret makes ArtifactOutdated=True",
+			name:     "SSH with private key secret makes Reconciling=True",
 			protocol: "ssh",
 			server: options{
 				username: "git",
@@ -384,12 +392,12 @@ func TestGitRepositoryReconciler_reconcileSource_authStrategy(t *testing.T) {
 			},
 			want: sreconcile.ResultSuccess,
 			assertConditions: []metav1.Condition{
-				*conditions.TrueCondition(sourcev1.ArtifactOutdatedCondition, "NewRevision", "new upstream revision 'master/<commit>'"),
-				*conditions.TrueCondition(meta.ReconcilingCondition, "NewRevision", "new upstream revision 'master/<commit>'"),
+				*conditions.TrueCondition(meta.ReconcilingCondition, meta.ProgressingReason, "building artifact: new upstream revision 'master/<commit>'"),
+				*conditions.UnknownCondition(meta.ReadyCondition, meta.ProgressingReason, "building artifact: new upstream revision 'master/<commit>"),
 			},
 		},
 		{
-			name:     "SSH with password protected private key secret makes ArtifactOutdated=True",
+			name:     "SSH with password protected private key secret makes Reconciling=True",
 			protocol: "ssh",
 			server: options{
 				username: "git",
@@ -409,8 +417,8 @@ func TestGitRepositoryReconciler_reconcileSource_authStrategy(t *testing.T) {
 			},
 			want: sreconcile.ResultSuccess,
 			assertConditions: []metav1.Condition{
-				*conditions.TrueCondition(sourcev1.ArtifactOutdatedCondition, "NewRevision", "new upstream revision 'master/<commit>'"),
-				*conditions.TrueCondition(meta.ReconcilingCondition, "NewRevision", "new upstream revision 'master/<commit>'"),
+				*conditions.TrueCondition(meta.ReconcilingCondition, meta.ProgressingReason, "building artifact: new upstream revision 'master/<commit>'"),
+				*conditions.UnknownCondition(meta.ReadyCondition, meta.ProgressingReason, "building artifact: new upstream revision 'master/<commit>'"),
 			},
 		},
 		{
@@ -421,10 +429,46 @@ func TestGitRepositoryReconciler_reconcileSource_authStrategy(t *testing.T) {
 			},
 			beforeFunc: func(obj *sourcev1.GitRepository) {
 				obj.Spec.SecretRef = &meta.LocalObjectReference{Name: "non-existing"}
+				conditions.MarkReconciling(obj, meta.ProgressingReason, "foo")
+				conditions.MarkUnknown(obj, meta.ReadyCondition, meta.ProgressingReason, "foo")
 			},
 			wantErr: true,
 			assertConditions: []metav1.Condition{
 				*conditions.TrueCondition(sourcev1.FetchFailedCondition, sourcev1.AuthenticationFailedReason, "failed to get secret '/non-existing': secrets \"non-existing\" not found"),
+				*conditions.TrueCondition(meta.ReconcilingCondition, meta.ProgressingReason, "foo"),
+				*conditions.UnknownCondition(meta.ReadyCondition, meta.ProgressingReason, "foo"),
+			},
+		},
+		{
+			name:     "Existing artifact makes ArtifactOutdated=True",
+			protocol: "http",
+			server: options{
+				username: "git",
+				password: "1234",
+			},
+			secret: &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "basic-auth",
+				},
+				Data: map[string][]byte{
+					"username": []byte("git"),
+					"password": []byte("1234"),
+				},
+			},
+			beforeFunc: func(obj *sourcev1.GitRepository) {
+				obj.Spec.SecretRef = &meta.LocalObjectReference{Name: "basic-auth"}
+				obj.Status = sourcev1.GitRepositoryStatus{
+					Artifact: &sourcev1.Artifact{
+						Revision: "staging/some-revision",
+						Path:     randStringRunes(10),
+					},
+				}
+			},
+			want: sreconcile.ResultSuccess,
+			assertConditions: []metav1.Condition{
+				*conditions.TrueCondition(sourcev1.ArtifactOutdatedCondition, "NewRevision", "new upstream revision 'master/<commit>'"),
+				*conditions.TrueCondition(meta.ReconcilingCondition, meta.ProgressingReason, "building artifact: new upstream revision 'master/<commit>'"),
+				*conditions.UnknownCondition(meta.ReadyCondition, meta.ProgressingReason, "building artifact: new upstream revision 'master/<commit>'"),
 			},
 		},
 	}
@@ -436,6 +480,7 @@ func TestGitRepositoryReconciler_reconcileSource_authStrategy(t *testing.T) {
 			obj := &sourcev1.GitRepository{
 				ObjectMeta: metav1.ObjectMeta{
 					GenerateName: "auth-strategy-",
+					Generation:   1,
 				},
 				Spec: sourcev1.GitRepositorySpec{
 					Interval: metav1.Duration{Duration: interval},
@@ -507,6 +552,7 @@ func TestGitRepositoryReconciler_reconcileSource_authStrategy(t *testing.T) {
 					features.ForceGoGitImplementation: false,
 				},
 				Libgit2TransportInitialized: transport.Enabled,
+				patchOptions:                getPatchOptions(gitRepositoryReadyCondition.Owned, "sc"),
 			}
 
 			for _, i := range testGitImplementations {
@@ -529,14 +575,24 @@ func TestGitRepositoryReconciler_reconcileSource_authStrategy(t *testing.T) {
 						assertConditions[k].Message = strings.ReplaceAll(assertConditions[k].Message, "<url>", obj.Spec.URL)
 					}
 
+					g.Expect(r.Client.Create(context.TODO(), obj)).ToNot(HaveOccurred())
+					defer func() {
+						g.Expect(r.Client.Delete(context.TODO(), obj)).ToNot(HaveOccurred())
+					}()
+
 					var commit git.Commit
 					var includes artifactSet
+					sp := patch.NewSerialPatcher(obj, r.Client)
 
-					got, err := r.reconcileSource(context.TODO(), obj, &commit, &includes, tmpDir)
+					got, err := r.reconcileSource(context.TODO(), sp, obj, &commit, &includes, tmpDir)
 					g.Expect(obj.Status.Conditions).To(conditions.MatchConditions(tt.assertConditions))
 					g.Expect(err != nil).To(Equal(tt.wantErr))
 					g.Expect(got).To(Equal(tt.want))
 					g.Expect(commit).ToNot(BeNil())
+
+					// In-progress status condition validity.
+					checker := conditionscheck.NewInProgressChecker(r.Client)
+					checker.CheckErr(ctx, obj)
 				})
 			}
 		})
@@ -554,6 +610,7 @@ func TestGitRepositoryReconciler_reconcileSource_libgit2TransportUninitialized(t
 			features.ForceGoGitImplementation: false,
 		},
 		Libgit2TransportInitialized: mockTransportNotInitialized,
+		patchOptions:                getPatchOptions(gitRepositoryReadyCondition.Owned, "sc"),
 	}
 
 	obj := &sourcev1.GitRepository{
@@ -573,7 +630,8 @@ func TestGitRepositoryReconciler_reconcileSource_libgit2TransportUninitialized(t
 	tmpDir := t.TempDir()
 	var commit git.Commit
 	var includes artifactSet
-	_, err := r.reconcileSource(ctx, obj, &commit, &includes, tmpDir)
+	sp := patch.NewSerialPatcher(obj, r.Client)
+	_, err := r.reconcileSource(ctx, sp, obj, &commit, &includes, tmpDir)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err).To(BeAssignableToTypeOf(&serror.Stalling{}))
 	g.Expect(err.Error()).To(Equal("libgit2 managed transport not initialized"))
@@ -594,30 +652,31 @@ func TestGitRepositoryReconciler_reconcileSource_checkoutStrategy(t *testing.T) 
 		wantErr               bool
 		wantRevision          string
 		wantArtifactOutdated  bool
+		wantReconciling       bool
 	}{
 		{
-			name:                 "Nil reference (default branch)",
-			want:                 sreconcile.ResultSuccess,
-			wantRevision:         "master/<commit>",
-			wantArtifactOutdated: true,
+			name:            "Nil reference (default branch)",
+			want:            sreconcile.ResultSuccess,
+			wantRevision:    "master/<commit>",
+			wantReconciling: true,
 		},
 		{
 			name: "Branch",
 			reference: &sourcev1.GitRepositoryRef{
 				Branch: "staging",
 			},
-			want:                 sreconcile.ResultSuccess,
-			wantRevision:         "staging/<commit>",
-			wantArtifactOutdated: true,
+			want:            sreconcile.ResultSuccess,
+			wantRevision:    "staging/<commit>",
+			wantReconciling: true,
 		},
 		{
 			name: "Tag",
 			reference: &sourcev1.GitRepositoryRef{
 				Tag: "v0.1.0",
 			},
-			want:                 sreconcile.ResultSuccess,
-			wantRevision:         "v0.1.0/<commit>",
-			wantArtifactOutdated: true,
+			want:            sreconcile.ResultSuccess,
+			wantRevision:    "v0.1.0/<commit>",
+			wantReconciling: true,
 		},
 		{
 			name:                  "Branch commit",
@@ -626,9 +685,9 @@ func TestGitRepositoryReconciler_reconcileSource_checkoutStrategy(t *testing.T) 
 				Branch: "staging",
 				Commit: "<commit>",
 			},
-			want:                 sreconcile.ResultSuccess,
-			wantRevision:         "staging/<commit>",
-			wantArtifactOutdated: true,
+			want:            sreconcile.ResultSuccess,
+			wantRevision:    "staging/<commit>",
+			wantReconciling: true,
 		},
 		{
 			name:                  "Branch commit",
@@ -637,36 +696,56 @@ func TestGitRepositoryReconciler_reconcileSource_checkoutStrategy(t *testing.T) 
 				Branch: "staging",
 				Commit: "<commit>",
 			},
-			want:                 sreconcile.ResultSuccess,
-			wantRevision:         "HEAD/<commit>",
-			wantArtifactOutdated: true,
+			want:            sreconcile.ResultSuccess,
+			wantRevision:    "HEAD/<commit>",
+			wantReconciling: true,
 		},
 		{
 			name: "SemVer",
 			reference: &sourcev1.GitRepositoryRef{
 				SemVer: "*",
 			},
-			want:                 sreconcile.ResultSuccess,
-			wantRevision:         "v2.0.0/<commit>",
-			wantArtifactOutdated: true,
+			want:            sreconcile.ResultSuccess,
+			wantRevision:    "v2.0.0/<commit>",
+			wantReconciling: true,
 		},
 		{
 			name: "SemVer range",
 			reference: &sourcev1.GitRepositoryRef{
 				SemVer: "<v0.2.1",
 			},
-			want:                 sreconcile.ResultSuccess,
-			wantRevision:         "0.2.0/<commit>",
-			wantArtifactOutdated: true,
+			want:            sreconcile.ResultSuccess,
+			wantRevision:    "0.2.0/<commit>",
+			wantReconciling: true,
 		},
 		{
 			name: "SemVer prerelease",
 			reference: &sourcev1.GitRepositoryRef{
 				SemVer: ">=1.0.0-0 <1.1.0-0",
 			},
-			wantRevision:         "v1.0.0-alpha/<commit>",
+			wantRevision:    "v1.0.0-alpha/<commit>",
+			want:            sreconcile.ResultSuccess,
+			wantReconciling: true,
+		},
+		{
+			name: "Existing artifact makes ArtifactOutdated=True",
+			reference: &sourcev1.GitRepositoryRef{
+				Branch: "staging",
+			},
+			beforeFunc: func(obj *sourcev1.GitRepository, latestRev string) {
+				obj.Status = sourcev1.GitRepositoryStatus{
+					Artifact: &sourcev1.Artifact{
+						Revision: "staging/some-revision",
+						Path:     randStringRunes(10),
+					},
+				}
+				conditions.MarkTrue(obj, sourcev1.ArtifactInStorageCondition, meta.SucceededReason, "foo")
+				conditions.MarkTrue(obj, meta.ReadyCondition, meta.SucceededReason, "foo")
+			},
 			want:                 sreconcile.ResultSuccess,
+			wantRevision:         "staging/<commit>",
 			wantArtifactOutdated: true,
+			wantReconciling:      true,
 		},
 		{
 			name: "Optimized clone",
@@ -682,11 +761,12 @@ func TestGitRepositoryReconciler_reconcileSource_checkoutStrategy(t *testing.T) 
 					},
 				}
 				conditions.MarkTrue(obj, sourcev1.ArtifactInStorageCondition, meta.SucceededReason, "foo")
+				conditions.MarkTrue(obj, meta.ReadyCondition, meta.SucceededReason, "foo")
 			},
-			want:                 sreconcile.ResultEmpty,
-			wantErr:              true,
-			wantRevision:         "staging/<commit>",
-			wantArtifactOutdated: false,
+			want:            sreconcile.ResultEmpty,
+			wantErr:         true,
+			wantRevision:    "staging/<commit>",
+			wantReconciling: false,
 		},
 		{
 			name: "Optimized clone different ignore",
@@ -704,10 +784,11 @@ func TestGitRepositoryReconciler_reconcileSource_checkoutStrategy(t *testing.T) 
 					},
 				}
 				conditions.MarkTrue(obj, sourcev1.ArtifactInStorageCondition, meta.SucceededReason, "foo")
+				conditions.MarkTrue(obj, meta.ReadyCondition, meta.SucceededReason, "foo")
 			},
-			want:                 sreconcile.ResultSuccess,
-			wantRevision:         "staging/<commit>",
-			wantArtifactOutdated: false,
+			want:            sreconcile.ResultSuccess,
+			wantRevision:    "staging/<commit>",
+			wantReconciling: false,
 		},
 	}
 
@@ -733,7 +814,7 @@ func TestGitRepositoryReconciler_reconcileSource_checkoutStrategy(t *testing.T) 
 	}
 
 	r := &GitRepositoryReconciler{
-		Client:        fakeclient.NewClientBuilder().WithScheme(runtime.NewScheme()).Build(),
+		Client:        fakeclient.NewClientBuilder().WithScheme(testEnv.GetScheme()).Build(),
 		EventRecorder: record.NewFakeRecorder(32),
 		Storage:       testStorage,
 		features: map[string]bool{
@@ -742,6 +823,7 @@ func TestGitRepositoryReconciler_reconcileSource_checkoutStrategy(t *testing.T) 
 			features.ForceGoGitImplementation: false,
 		},
 		Libgit2TransportInitialized: transport.Enabled,
+		patchOptions:                getPatchOptions(gitRepositoryReadyCondition.Owned, "sc"),
 	}
 
 	for _, tt := range tests {
@@ -749,6 +831,7 @@ func TestGitRepositoryReconciler_reconcileSource_checkoutStrategy(t *testing.T) 
 			obj := &sourcev1.GitRepository{
 				ObjectMeta: metav1.ObjectMeta{
 					GenerateName: "checkout-strategy-",
+					Generation:   1,
 				},
 				Spec: sourcev1.GitRepositorySpec{
 					Interval:  metav1.Duration{Duration: interval},
@@ -779,9 +862,15 @@ func TestGitRepositoryReconciler_reconcileSource_checkoutStrategy(t *testing.T) 
 						tt.beforeFunc(obj, headRef.Hash().String())
 					}
 
+					g.Expect(r.Client.Create(context.TODO(), obj)).ToNot(HaveOccurred())
+					defer func() {
+						g.Expect(r.Client.Delete(context.TODO(), obj)).ToNot(HaveOccurred())
+					}()
+
 					var commit git.Commit
 					var includes artifactSet
-					got, err := r.reconcileSource(ctx, obj, &commit, &includes, tmpDir)
+					sp := patch.NewSerialPatcher(obj, r.Client)
+					got, err := r.reconcileSource(ctx, sp, obj, &commit, &includes, tmpDir)
 					if err != nil {
 						println(err.Error())
 					}
@@ -791,7 +880,11 @@ func TestGitRepositoryReconciler_reconcileSource_checkoutStrategy(t *testing.T) 
 						revision := strings.ReplaceAll(tt.wantRevision, "<commit>", headRef.Hash().String())
 						g.Expect(commit.String()).To(Equal(revision))
 						g.Expect(conditions.IsTrue(obj, sourcev1.ArtifactOutdatedCondition)).To(Equal(tt.wantArtifactOutdated))
+						g.Expect(conditions.IsTrue(obj, meta.ReconcilingCondition)).To(Equal(tt.wantReconciling))
 					}
+					// In-progress status condition validity.
+					checker := conditionscheck.NewInProgressChecker(r.Client)
+					checker.CheckErr(ctx, obj)
 				})
 			}
 		})
@@ -972,6 +1065,7 @@ func TestGitRepositoryReconciler_reconcileArtifact(t *testing.T) {
 				EventRecorder: record.NewFakeRecorder(32),
 				Storage:       testStorage,
 				features:      features.FeatureGates(),
+				patchOptions:  getPatchOptions(gitRepositoryReadyCondition.Owned, "sc"),
 			}
 
 			obj := &sourcev1.GitRepository{
@@ -990,8 +1084,9 @@ func TestGitRepositoryReconciler_reconcileArtifact(t *testing.T) {
 				Hash:      []byte("revision"),
 				Reference: "refs/heads/main",
 			}
+			sp := patch.NewSerialPatcher(obj, r.Client)
 
-			got, err := r.reconcileArtifact(ctx, obj, &commit, &tt.includes, tt.dir)
+			got, err := r.reconcileArtifact(ctx, sp, obj, &commit, &tt.includes, tt.dir)
 			g.Expect(obj.Status.Conditions).To(conditions.MatchConditions(tt.assertConditions))
 			g.Expect(err != nil).To(Equal(tt.wantErr))
 			g.Expect(got).To(Equal(tt.want))
@@ -1117,6 +1212,7 @@ func TestGitRepositoryReconciler_reconcileInclude(t *testing.T) {
 				Storage:           storage,
 				requeueDependency: dependencyInterval,
 				features:          features.FeatureGates(),
+				patchOptions:      getPatchOptions(gitRepositoryReadyCondition.Owned, "sc"),
 			}
 
 			obj := &sourcev1.GitRepository{
@@ -1153,7 +1249,9 @@ func TestGitRepositoryReconciler_reconcileInclude(t *testing.T) {
 			g.Expect(err).ToNot(HaveOccurred())
 			includes = *artifactSet
 
-			got, err := r.reconcileInclude(ctx, obj, &commit, &includes, tmpDir)
+			sp := patch.NewSerialPatcher(obj, r.Client)
+
+			got, err := r.reconcileInclude(ctx, sp, obj, &commit, &includes, tmpDir)
 			g.Expect(obj.GetConditions()).To(conditions.MatchConditions(tt.assertConditions))
 			g.Expect(err != nil).To(Equal(tt.wantErr))
 			if err == nil {
@@ -1210,6 +1308,7 @@ func TestGitRepositoryReconciler_reconcileStorage(t *testing.T) {
 					}
 				}
 				testStorage.SetArtifactURL(obj.Status.Artifact)
+				conditions.MarkTrue(obj, meta.ReadyCondition, "foo", "bar")
 				return nil
 			},
 			assertArtifact: &sourcev1.Artifact{
@@ -1226,6 +1325,17 @@ func TestGitRepositoryReconciler_reconcileStorage(t *testing.T) {
 				"!/reconcile-storage/a.txt",
 			},
 			want: sreconcile.ResultSuccess,
+			assertConditions: []metav1.Condition{
+				*conditions.TrueCondition(meta.ReadyCondition, "foo", "bar"),
+			},
+		},
+		{
+			name: "build artifact first time",
+			want: sreconcile.ResultSuccess,
+			assertConditions: []metav1.Condition{
+				*conditions.TrueCondition(meta.ReconcilingCondition, meta.ProgressingReason, "building artifact"),
+				*conditions.UnknownCondition(meta.ReadyCondition, meta.ProgressingReason, "building artifact"),
+			},
 		},
 		{
 			name: "notices missing artifact in storage",
@@ -1242,7 +1352,8 @@ func TestGitRepositoryReconciler_reconcileStorage(t *testing.T) {
 				"!/reconcile-storage/invalid.txt",
 			},
 			assertConditions: []metav1.Condition{
-				*conditions.TrueCondition(meta.ReconcilingCondition, "NoArtifact", "no artifact for resource in storage"),
+				*conditions.TrueCondition(meta.ReconcilingCondition, meta.ProgressingReason, "building artifact: disappeared from storage"),
+				*conditions.UnknownCondition(meta.ReadyCondition, meta.ProgressingReason, "building artifact: disappeared from storage"),
 			},
 		},
 		{
@@ -1260,6 +1371,7 @@ func TestGitRepositoryReconciler_reconcileStorage(t *testing.T) {
 				if err := testStorage.AtomicWriteFile(obj.Status.Artifact, strings.NewReader("file"), 0o640); err != nil {
 					return err
 				}
+				conditions.MarkTrue(obj, meta.ReadyCondition, "foo", "bar")
 				return nil
 			},
 			want: sreconcile.ResultSuccess,
@@ -1273,6 +1385,9 @@ func TestGitRepositoryReconciler_reconcileStorage(t *testing.T) {
 				URL:      testStorage.Hostname + "/reconcile-storage/hostname.txt",
 				Size:     int64p(int64(len("file"))),
 			},
+			assertConditions: []metav1.Condition{
+				*conditions.TrueCondition(meta.ReadyCondition, "foo", "bar"),
+			},
 		},
 	}
 	for _, tt := range tests {
@@ -1284,23 +1399,32 @@ func TestGitRepositoryReconciler_reconcileStorage(t *testing.T) {
 			}()
 
 			r := &GitRepositoryReconciler{
+				Client:        fakeclient.NewClientBuilder().WithScheme(testEnv.GetScheme()).Build(),
 				EventRecorder: record.NewFakeRecorder(32),
 				Storage:       testStorage,
 				features:      features.FeatureGates(),
+				patchOptions:  getPatchOptions(gitRepositoryReadyCondition.Owned, "sc"),
 			}
 
 			obj := &sourcev1.GitRepository{
 				ObjectMeta: metav1.ObjectMeta{
 					GenerateName: "test-",
+					Generation:   1,
 				},
 			}
 			if tt.beforeFunc != nil {
 				g.Expect(tt.beforeFunc(obj, testStorage)).To(Succeed())
 			}
 
+			g.Expect(r.Client.Create(context.TODO(), obj)).ToNot(HaveOccurred())
+			defer func() {
+				g.Expect(r.Client.Delete(context.TODO(), obj)).ToNot(HaveOccurred())
+			}()
+
 			var c *git.Commit
 			var as artifactSet
-			got, err := r.reconcileStorage(context.TODO(), obj, c, &as, "")
+			sp := patch.NewSerialPatcher(obj, r.Client)
+			got, err := r.reconcileStorage(context.TODO(), sp, obj, c, &as, "")
 			g.Expect(err != nil).To(Equal(tt.wantErr))
 			g.Expect(got).To(Equal(tt.want))
 
@@ -1318,6 +1442,10 @@ func TestGitRepositoryReconciler_reconcileStorage(t *testing.T) {
 				}
 				g.Expect(absoluteP).NotTo(BeAnExistingFile())
 			}
+
+			// In-progress status condition validity.
+			checker := conditionscheck.NewInProgressChecker(r.Client)
+			checker.CheckErr(ctx, obj)
 		})
 	}
 }
@@ -1329,6 +1457,7 @@ func TestGitRepositoryReconciler_reconcileDelete(t *testing.T) {
 		EventRecorder: record.NewFakeRecorder(32),
 		Storage:       testStorage,
 		features:      features.FeatureGates(),
+		patchOptions:  getPatchOptions(gitRepositoryReadyCondition.Owned, "sc"),
 	}
 
 	obj := &sourcev1.GitRepository{
@@ -1467,6 +1596,7 @@ func TestGitRepositoryReconciler_verifyCommitSignature(t *testing.T) {
 				EventRecorder: record.NewFakeRecorder(32),
 				Client:        builder.Build(),
 				features:      features.FeatureGates(),
+				patchOptions:  getPatchOptions(gitRepositoryReadyCondition.Owned, "sc"),
 			}
 
 			obj := &sourcev1.GitRepository{
@@ -1610,6 +1740,10 @@ func TestGitRepositoryReconciler_ConditionsUpdate(t *testing.T) {
 				Storage:                     testStorage,
 				features:                    features.FeatureGates(),
 				Libgit2TransportInitialized: transport.Enabled,
+				patchOptions: []patch.Option{
+					patch.WithOwnedConditions{Conditions: gitRepositoryReadyCondition.Owned},
+					patch.WithFieldOwner("source-controller"),
+				},
 			}
 
 			key := client.ObjectKeyFromObject(obj)
@@ -1828,8 +1962,7 @@ func TestGitRepositoryReconciler_statusConditions(t *testing.T) {
 			clientBuilder.WithObjects(obj)
 			c := clientBuilder.Build()
 
-			patchHelper, err := patch.NewHelper(obj, c)
-			g.Expect(err).ToNot(HaveOccurred())
+			serialPatcher := patch.NewSerialPatcher(obj, c)
 
 			if tt.beforeFunc != nil {
 				tt.beforeFunc(obj)
@@ -1839,9 +1972,10 @@ func TestGitRepositoryReconciler_statusConditions(t *testing.T) {
 			recResult := sreconcile.ResultSuccess
 			var retErr error
 
-			summarizeHelper := summarize.NewHelper(record.NewFakeRecorder(32), patchHelper)
+			summarizeHelper := summarize.NewHelper(record.NewFakeRecorder(32), serialPatcher)
 			summarizeOpts := []summarize.Option{
 				summarize.WithConditions(gitRepositoryReadyCondition),
+				summarize.WithBiPolarityConditionTypes(sourcev1.SourceVerifiedCondition),
 				summarize.WithReconcileResult(recResult),
 				summarize.WithReconcileError(retErr),
 				summarize.WithIgnoreNotFound(),
@@ -1975,6 +2109,7 @@ func TestGitRepositoryReconciler_notify(t *testing.T) {
 			reconciler := &GitRepositoryReconciler{
 				EventRecorder: recorder,
 				features:      features.FeatureGates(),
+				patchOptions:  getPatchOptions(gitRepositoryReadyCondition.Owned, "sc"),
 			}
 			reconciler.notify(ctx, oldObj, newObj, tt.commit, tt.res, tt.resErr)
 
@@ -2114,6 +2249,7 @@ func TestGitRepositoryReconciler_fetchIncludes(t *testing.T) {
 			r := &GitRepositoryReconciler{
 				Client:        builder.Build(),
 				EventRecorder: record.NewFakeRecorder(32),
+				patchOptions:  getPatchOptions(gitRepositoryReadyCondition.Owned, "sc"),
 			}
 
 			obj := &sourcev1.GitRepository{
