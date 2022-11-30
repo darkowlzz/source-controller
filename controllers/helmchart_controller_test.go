@@ -308,6 +308,7 @@ func TestHelmChartReconciler_reconcileStorage(t *testing.T) {
 					}
 				}
 				testStorage.SetArtifactURL(obj.Status.Artifact)
+				conditions.MarkTrue(obj, meta.ReadyCondition, "foo", "bar")
 				return nil
 			},
 			assertArtifact: &sourcev1.Artifact{
@@ -324,6 +325,17 @@ func TestHelmChartReconciler_reconcileStorage(t *testing.T) {
 				"!/reconcile-storage/a.txt",
 			},
 			want: sreconcile.ResultSuccess,
+			assertConditions: []metav1.Condition{
+				*conditions.TrueCondition(meta.ReadyCondition, "foo", "bar"),
+			},
+		},
+		{
+			name: "build artifact first time",
+			want: sreconcile.ResultSuccess,
+			assertConditions: []metav1.Condition{
+				*conditions.TrueCondition(meta.ReconcilingCondition, meta.ProgressingReason, "building artifact"),
+				*conditions.UnknownCondition(meta.ReadyCondition, meta.ProgressingReason, "building artifact"),
+			},
 		},
 		{
 			name: "notices missing artifact in storage",
@@ -340,7 +352,8 @@ func TestHelmChartReconciler_reconcileStorage(t *testing.T) {
 				"!/reconcile-storage/invalid.txt",
 			},
 			assertConditions: []metav1.Condition{
-				*conditions.TrueCondition(meta.ReconcilingCondition, "NoArtifact", "no artifact for resource in storage"),
+				*conditions.TrueCondition(meta.ReconcilingCondition, meta.ProgressingReason, "building artifact: disappeared from storage"),
+				*conditions.UnknownCondition(meta.ReadyCondition, meta.ProgressingReason, "building artifact: disappeared from storage"),
 			},
 		},
 		{
@@ -358,6 +371,7 @@ func TestHelmChartReconciler_reconcileStorage(t *testing.T) {
 				if err := testStorage.AtomicWriteFile(obj.Status.Artifact, strings.NewReader("file"), 0o640); err != nil {
 					return err
 				}
+				conditions.MarkTrue(obj, meta.ReadyCondition, "foo", "bar")
 				return nil
 			},
 			want: sreconcile.ResultSuccess,
@@ -371,6 +385,9 @@ func TestHelmChartReconciler_reconcileStorage(t *testing.T) {
 				URL:      testStorage.Hostname + "/reconcile-storage/hostname.txt",
 				Size:     int64p(int64(len("file"))),
 			},
+			assertConditions: []metav1.Condition{
+				*conditions.TrueCondition(meta.ReadyCondition, "foo", "bar"),
+			},
 		},
 	}
 	for _, tt := range tests {
@@ -382,20 +399,30 @@ func TestHelmChartReconciler_reconcileStorage(t *testing.T) {
 			}()
 
 			r := &HelmChartReconciler{
+				Client:        fakeclient.NewClientBuilder().WithScheme(testEnv.GetScheme()).Build(),
 				EventRecorder: record.NewFakeRecorder(32),
 				Storage:       testStorage,
+				patchOptions:  getPatchOptions(helmChartReadyCondition.Owned, "sc"),
 			}
 
 			obj := &sourcev1.HelmChart{
 				ObjectMeta: metav1.ObjectMeta{
 					GenerateName: "test-",
+					Generation:   1,
 				},
 			}
 			if tt.beforeFunc != nil {
 				g.Expect(tt.beforeFunc(obj, testStorage)).To(Succeed())
 			}
 
-			got, err := r.reconcileStorage(context.TODO(), obj, nil)
+			g.Expect(r.Client.Create(context.TODO(), obj)).ToNot(HaveOccurred())
+			defer func() {
+				g.Expect(r.Client.Delete(context.TODO(), obj)).ToNot(HaveOccurred())
+			}()
+
+			sp := patch.NewSerialPatcher(obj, r.Client)
+
+			got, err := r.reconcileStorage(context.TODO(), sp, obj, nil)
 			g.Expect(err != nil).To(Equal(tt.wantErr))
 			g.Expect(got).To(Equal(tt.want))
 
@@ -413,6 +440,10 @@ func TestHelmChartReconciler_reconcileStorage(t *testing.T) {
 				}
 				g.Expect(absoluteP).NotTo(BeAnExistingFile())
 			}
+
+			// In-progress status condition validity.
+			checker := conditionscheck.NewInProgressChecker(r.Client)
+			checker.CheckErr(ctx, obj)
 		})
 	}
 }
@@ -467,11 +498,49 @@ func TestHelmChartReconciler_reconcileSource(t *testing.T) {
 
 				g.Expect(obj.Status.ObservedSourceArtifactRevision).To(Equal(gitArtifact.Revision))
 				g.Expect(obj.Status.Conditions).To(conditions.MatchConditions([]metav1.Condition{
-					*conditions.TrueCondition(sourcev1.ArtifactOutdatedCondition, "NewChart", "pulled 'helmchart' chart with version '0.1.0'"),
+					*conditions.TrueCondition(meta.ReconcilingCondition, meta.ProgressingReason, "building artifact: pulled 'helmchart' chart with version '0.1.0'"),
+					*conditions.UnknownCondition(meta.ReadyCondition, meta.ProgressingReason, "building artifact: pulled 'helmchart' chart with version '0.1.0'"),
 				}))
 			},
 			cleanFunc: func(g *WithT, build *chart.Build) {
 				g.Expect(os.Remove(build.Path)).To(Succeed())
+			},
+		},
+		{
+			name: "Existing artifact makes AritfactOutdated=True",
+			source: &sourcev1.GitRepository{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "gitrepository",
+					Namespace: "default",
+				},
+				Status: sourcev1.GitRepositoryStatus{
+					Artifact: gitArtifact,
+				},
+			},
+			beforeFunc: func(obj *sourcev1.HelmChart) {
+				obj.Spec.Chart = "testdata/charts/helmchart-0.1.0.tgz"
+				obj.Spec.SourceRef = sourcev1.LocalHelmChartSourceReference{
+					Name: "gitrepository",
+					Kind: sourcev1.GitRepositoryKind,
+				}
+				obj.Status.Artifact = &sourcev1.Artifact{
+					Path:     "some-path",
+					Revision: "some-rev",
+				}
+			},
+			want: sreconcile.ResultSuccess,
+			assertFunc: func(g *WithT, build chart.Build, obj sourcev1.HelmChart) {
+				g.Expect(build.Complete()).To(BeTrue())
+				g.Expect(build.Name).To(Equal("helmchart"))
+				g.Expect(build.Version).To(Equal("0.1.0"))
+				g.Expect(build.Path).To(BeARegularFile())
+
+				g.Expect(obj.Status.ObservedSourceArtifactRevision).To(Equal(gitArtifact.Revision))
+				g.Expect(obj.Status.Conditions).To(conditions.MatchConditions([]metav1.Condition{
+					*conditions.TrueCondition(sourcev1.ArtifactOutdatedCondition, "NewChart", "pulled 'helmchart' chart with version '0.1.0'"),
+					*conditions.TrueCondition(meta.ReconcilingCondition, meta.ProgressingReason, "building artifact: pulled 'helmchart' chart with version '0.1.0'"),
+					*conditions.UnknownCondition(meta.ReadyCondition, meta.ProgressingReason, "building artifact: pulled 'helmchart' chart with version '0.1.0'"),
+				}))
 			},
 		},
 		{
@@ -481,6 +550,8 @@ func TestHelmChartReconciler_reconcileSource(t *testing.T) {
 					Name: "unavailable",
 					Kind: sourcev1.GitRepositoryKind,
 				}
+				conditions.MarkReconciling(obj, meta.ProgressingReason, "foo")
+				conditions.MarkUnknown(obj, meta.ReadyCondition, "foo", "bar")
 			},
 			want:    sreconcile.ResultEmpty,
 			wantErr: &serror.Event{Err: errors.New("gitrepositories.source.toolkit.fluxcd.io \"unavailable\" not found")},
@@ -489,6 +560,8 @@ func TestHelmChartReconciler_reconcileSource(t *testing.T) {
 
 				g.Expect(obj.Status.Conditions).To(conditions.MatchConditions([]metav1.Condition{
 					*conditions.TrueCondition(sourcev1.FetchFailedCondition, "SourceUnavailable", "failed to get source: gitrepositories.source.toolkit.fluxcd.io \"unavailable\" not found"),
+					*conditions.TrueCondition(meta.ReconcilingCondition, meta.ProgressingReason, "foo"),
+					*conditions.UnknownCondition(meta.ReadyCondition, "foo", "bar"),
 				}))
 			},
 		},
@@ -499,6 +572,8 @@ func TestHelmChartReconciler_reconcileSource(t *testing.T) {
 					Name: "unavailable",
 					Kind: "Unsupported",
 				}
+				conditions.MarkReconciling(obj, meta.ProgressingReason, "foo")
+				conditions.MarkUnknown(obj, meta.ReadyCondition, meta.ProgressingReason, "foo")
 			},
 			want:    sreconcile.ResultEmpty,
 			wantErr: &serror.Stalling{Err: errors.New("unsupported source kind 'Unsupported'")},
@@ -507,6 +582,8 @@ func TestHelmChartReconciler_reconcileSource(t *testing.T) {
 
 				g.Expect(obj.Status.Conditions).To(conditions.MatchConditions([]metav1.Condition{
 					*conditions.TrueCondition(sourcev1.FetchFailedCondition, "SourceUnavailable", "failed to get source: unsupported source kind"),
+					*conditions.TrueCondition(meta.ReconcilingCondition, meta.ProgressingReason, "foo"),
+					*conditions.UnknownCondition(meta.ReadyCondition, meta.ProgressingReason, "foo"),
 				}))
 			},
 		},
@@ -528,6 +605,8 @@ func TestHelmChartReconciler_reconcileSource(t *testing.T) {
 					Kind: sourcev1.GitRepositoryKind,
 				}
 				obj.Spec.ValuesFiles = []string{"invalid.yaml"}
+				conditions.MarkReconciling(obj, meta.ProgressingReason, "foo")
+				conditions.MarkUnknown(obj, meta.ReadyCondition, meta.ProgressingReason, "foo")
 			},
 			want:    sreconcile.ResultEmpty,
 			wantErr: &serror.Stalling{Err: errors.New("values files merge error: no values file found at path")},
@@ -536,6 +615,8 @@ func TestHelmChartReconciler_reconcileSource(t *testing.T) {
 
 				g.Expect(obj.Status.Conditions).To(conditions.MatchConditions([]metav1.Condition{
 					*conditions.TrueCondition(sourcev1.BuildFailedCondition, "ValuesFilesError", "values files merge error: no values file found at path"),
+					*conditions.TrueCondition(meta.ReconcilingCondition, meta.ProgressingReason, "foo"),
+					*conditions.UnknownCondition(meta.ReadyCondition, meta.ProgressingReason, "foo"),
 				}))
 			},
 		},
@@ -555,6 +636,8 @@ func TestHelmChartReconciler_reconcileSource(t *testing.T) {
 					Kind: sourcev1.GitRepositoryKind,
 				}
 				obj.Status.ObservedSourceArtifactRevision = "foo"
+				conditions.MarkReconciling(obj, meta.ProgressingReason, "foo")
+				conditions.MarkUnknown(obj, meta.ReadyCondition, meta.ProgressingReason, "foo")
 			},
 			want: sreconcile.ResultRequeue,
 			assertFunc: func(g *WithT, build chart.Build, obj sourcev1.HelmChart) {
@@ -563,6 +646,8 @@ func TestHelmChartReconciler_reconcileSource(t *testing.T) {
 				g.Expect(obj.Status.ObservedSourceArtifactRevision).To(Equal("foo"))
 				g.Expect(obj.Status.Conditions).To(conditions.MatchConditions([]metav1.Condition{
 					*conditions.TrueCondition(sourcev1.FetchFailedCondition, "NoSourceArtifact", "no artifact available"),
+					*conditions.TrueCondition(meta.ReconcilingCondition, meta.ProgressingReason, "foo"),
+					*conditions.UnknownCondition(meta.ReadyCondition, meta.ProgressingReason, "foo"),
 				}))
 			},
 		},
@@ -571,7 +656,7 @@ func TestHelmChartReconciler_reconcileSource(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			g := NewWithT(t)
 
-			clientBuilder := fake.NewClientBuilder()
+			clientBuilder := fake.NewClientBuilder().WithScheme(testEnv.GetScheme())
 			if tt.source != nil {
 				clientBuilder.WithRuntimeObjects(tt.source)
 			}
@@ -580,12 +665,14 @@ func TestHelmChartReconciler_reconcileSource(t *testing.T) {
 				Client:        clientBuilder.Build(),
 				EventRecorder: record.NewFakeRecorder(32),
 				Storage:       storage,
+				patchOptions:  getPatchOptions(helmChartReadyCondition.Owned, "sc"),
 			}
 
 			obj := sourcev1.HelmChart{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "chart",
-					Namespace: "default",
+					Name:       "chart",
+					Namespace:  "default",
+					Generation: 1,
 				},
 				Spec: sourcev1.HelmChartSpec{},
 			}
@@ -598,7 +685,14 @@ func TestHelmChartReconciler_reconcileSource(t *testing.T) {
 				defer tt.cleanFunc(g, &b)
 			}
 
-			got, err := r.reconcileSource(context.TODO(), &obj, &b)
+			g.Expect(r.Client.Create(context.TODO(), &obj)).ToNot(HaveOccurred())
+			defer func() {
+				g.Expect(r.Client.Delete(context.TODO(), &obj)).ToNot(HaveOccurred())
+			}()
+
+			sp := patch.NewSerialPatcher(&obj, r.Client)
+
+			got, err := r.reconcileSource(context.TODO(), sp, &obj, &b)
 
 			g.Expect(err != nil).To(Equal(tt.wantErr != nil))
 			if tt.wantErr != nil {
@@ -610,6 +704,10 @@ func TestHelmChartReconciler_reconcileSource(t *testing.T) {
 			if tt.assertFunc != nil {
 				tt.assertFunc(g, b, obj)
 			}
+
+			// In-progress status condition validity.
+			checker := conditionscheck.NewInProgressChecker(r.Client)
+			checker.CheckErr(ctx, &obj)
 		})
 	}
 }
@@ -839,6 +937,7 @@ func TestHelmChartReconciler_buildFromHelmRepository(t *testing.T) {
 				EventRecorder: record.NewFakeRecorder(32),
 				Getters:       testGetters,
 				Storage:       storage,
+				patchOptions:  getPatchOptions(helmChartReadyCondition.Owned, "sc"),
 			}
 
 			repository := &sourcev1.HelmRepository{
@@ -1005,8 +1104,6 @@ func TestHelmChartReconciler_buildFromOCIHelmRepository(t *testing.T) {
 			assertFunc: func(g *WithT, obj *sourcev1.HelmChart, build chart.Build) {
 				g.Expect(build.Name).To(Equal(metadata.Name))
 				g.Expect(build.Version).To(Equal(metadata.Version))
-				fmt.Println("buildpath", build.Path)
-				fmt.Println("storage Path", storage.LocalPath(*cachedArtifact.DeepCopy()))
 				g.Expect(build.Path).ToNot(Equal(storage.LocalPath(*cachedArtifact.DeepCopy())))
 				g.Expect(build.Path).To(BeARegularFile())
 			},
@@ -1070,6 +1167,7 @@ func TestHelmChartReconciler_buildFromOCIHelmRepository(t *testing.T) {
 				Getters:                 testGetters,
 				Storage:                 storage,
 				RegistryClientGenerator: registry.ClientGenerator,
+				patchOptions:            getPatchOptions(helmChartReadyCondition.Owned, "sc"),
 			}
 
 			repository := &sourcev1.HelmRepository{
@@ -1270,6 +1368,7 @@ func TestHelmChartReconciler_buildFromTarballArtifact(t *testing.T) {
 				Storage:                 storage,
 				Getters:                 testGetters,
 				RegistryClientGenerator: registry.ClientGenerator,
+				patchOptions:            getPatchOptions(helmChartReadyCondition.Owned, "sc"),
 			}
 
 			obj := &sourcev1.HelmChart{
@@ -1427,8 +1526,10 @@ func TestHelmChartReconciler_reconcileArtifact(t *testing.T) {
 			g := NewWithT(t)
 
 			r := &HelmChartReconciler{
+				Client:        fakeclient.NewClientBuilder().WithScheme(testEnv.GetScheme()).Build(),
 				EventRecorder: record.NewFakeRecorder(32),
 				Storage:       testStorage,
+				patchOptions:  getPatchOptions(helmChartReadyCondition.Owned, "sc"),
 			}
 
 			obj := &sourcev1.HelmChart{
@@ -1442,7 +1543,14 @@ func TestHelmChartReconciler_reconcileArtifact(t *testing.T) {
 				tt.beforeFunc(obj)
 			}
 
-			got, err := r.reconcileArtifact(ctx, obj, tt.build)
+			g.Expect(r.Client.Create(context.TODO(), obj)).ToNot(HaveOccurred())
+			defer func() {
+				g.Expect(r.Client.Delete(context.TODO(), obj)).ToNot(HaveOccurred())
+			}()
+
+			sp := patch.NewSerialPatcher(obj, r.Client)
+
+			got, err := r.reconcileArtifact(ctx, sp, obj, tt.build)
 			g.Expect(err != nil).To(Equal(tt.wantErr))
 			g.Expect(got).To(Equal(tt.want))
 			g.Expect(obj.Status.Conditions).To(conditions.MatchConditions(tt.assertConditions))
@@ -1471,7 +1579,8 @@ func TestHelmChartReconciler_getHelmRepositorySecret(t *testing.T) {
 	clientBuilder.WithObjects(mock)
 
 	r := &HelmChartReconciler{
-		Client: clientBuilder.Build(),
+		Client:       clientBuilder.Build(),
+		patchOptions: getPatchOptions(helmChartReadyCondition.Owned, "sc"),
 	}
 
 	tests := []struct {
@@ -1566,7 +1675,8 @@ func TestHelmChartReconciler_getSource(t *testing.T) {
 	clientBuilder.WithObjects(mocks...)
 
 	r := &HelmChartReconciler{
-		Client: clientBuilder.Build(),
+		Client:       clientBuilder.Build(),
+		patchOptions: getPatchOptions(helmChartReadyCondition.Owned, "sc"),
 	}
 
 	tests := []struct {
@@ -1672,6 +1782,7 @@ func TestHelmChartReconciler_reconcileDelete(t *testing.T) {
 	r := &HelmChartReconciler{
 		EventRecorder: record.NewFakeRecorder(32),
 		Storage:       testStorage,
+		patchOptions:  getPatchOptions(helmChartReadyCondition.Owned, "sc"),
 	}
 
 	obj := &sourcev1.HelmChart{
@@ -1698,7 +1809,7 @@ func TestHelmChartReconciler_reconcileDelete(t *testing.T) {
 func TestHelmChartReconciler_reconcileSubRecs(t *testing.T) {
 	// Helper to build simple helmChartReconcileFunc with result and error.
 	buildReconcileFuncs := func(r sreconcile.Result, e error) helmChartReconcileFunc {
-		return func(_ context.Context, _ *sourcev1.HelmChart, _ *chart.Build) (sreconcile.Result, error) {
+		return func(_ context.Context, _ *patch.SerialPatcher, _ *sourcev1.HelmChart, _ *chart.Build) (sreconcile.Result, error) {
 			return r, e
 		}
 	}
@@ -1719,6 +1830,10 @@ func TestHelmChartReconciler_reconcileSubRecs(t *testing.T) {
 			},
 			wantResult: sreconcile.ResultSuccess,
 			wantErr:    false,
+			assertConditions: []metav1.Condition{
+				*conditions.TrueCondition(meta.ReconcilingCondition, meta.ProgressingReason, "reconciliation in progress"),
+				*conditions.UnknownCondition(meta.ReadyCondition, meta.ProgressingReason, "reconciliation in progress"),
+			},
 		},
 		{
 			name:               "successful reconciliation with generation difference",
@@ -1730,7 +1845,8 @@ func TestHelmChartReconciler_reconcileSubRecs(t *testing.T) {
 			wantResult: sreconcile.ResultSuccess,
 			wantErr:    false,
 			assertConditions: []metav1.Condition{
-				*conditions.TrueCondition(meta.ReconcilingCondition, "NewGeneration", "reconciling new object generation (3)"),
+				*conditions.TrueCondition(meta.ReconcilingCondition, meta.ProgressingReason, "processing object: new generation (3)"),
+				*conditions.UnknownCondition(meta.ReadyCondition, meta.ProgressingReason, "processing object: new generation (3)"),
 			},
 		},
 		{
@@ -1740,15 +1856,19 @@ func TestHelmChartReconciler_reconcileSubRecs(t *testing.T) {
 			},
 			wantResult: sreconcile.ResultEmpty,
 			wantErr:    true,
+			assertConditions: []metav1.Condition{
+				*conditions.TrueCondition(meta.ReconcilingCondition, meta.ProgressingReason, "reconciliation in progress"),
+				*conditions.UnknownCondition(meta.ReadyCondition, meta.ProgressingReason, "reconciliation in progress"),
+			},
 		},
 		{
 			name: "multiple object status conditions mutations",
 			reconcileFuncs: []helmChartReconcileFunc{
-				func(_ context.Context, obj *sourcev1.HelmChart, _ *chart.Build) (sreconcile.Result, error) {
+				func(_ context.Context, _ *patch.SerialPatcher, obj *sourcev1.HelmChart, _ *chart.Build) (sreconcile.Result, error) {
 					conditions.MarkTrue(obj, sourcev1.ArtifactOutdatedCondition, "NewRevision", "new index revision")
 					return sreconcile.ResultSuccess, nil
 				},
-				func(_ context.Context, obj *sourcev1.HelmChart, _ *chart.Build) (sreconcile.Result, error) {
+				func(_ context.Context, _ *patch.SerialPatcher, obj *sourcev1.HelmChart, _ *chart.Build) (sreconcile.Result, error) {
 					conditions.MarkTrue(obj, meta.ReconcilingCondition, "Progressing", "creating artifact")
 					return sreconcile.ResultSuccess, nil
 				},
@@ -1757,7 +1877,8 @@ func TestHelmChartReconciler_reconcileSubRecs(t *testing.T) {
 			wantErr:    false,
 			assertConditions: []metav1.Condition{
 				*conditions.TrueCondition(sourcev1.ArtifactOutdatedCondition, "NewRevision", "new index revision"),
-				*conditions.TrueCondition(meta.ReconcilingCondition, "Progressing", "creating artifact"),
+				*conditions.TrueCondition(meta.ReconcilingCondition, meta.ProgressingReason, "creating artifact"),
+				*conditions.UnknownCondition(meta.ReadyCondition, meta.ProgressingReason, "reconciliation in progress"),
 			},
 		},
 		{
@@ -1769,6 +1890,10 @@ func TestHelmChartReconciler_reconcileSubRecs(t *testing.T) {
 			},
 			wantResult: sreconcile.ResultRequeue,
 			wantErr:    false,
+			assertConditions: []metav1.Condition{
+				*conditions.TrueCondition(meta.ReconcilingCondition, meta.ProgressingReason, "reconciliation in progress"),
+				*conditions.UnknownCondition(meta.ReadyCondition, meta.ProgressingReason, "reconciliation in progress"),
+			},
 		},
 		{
 			name: "subrecs with error before result=Requeue",
@@ -1779,6 +1904,10 @@ func TestHelmChartReconciler_reconcileSubRecs(t *testing.T) {
 			},
 			wantResult: sreconcile.ResultEmpty,
 			wantErr:    true,
+			assertConditions: []metav1.Condition{
+				*conditions.TrueCondition(meta.ReconcilingCondition, meta.ProgressingReason, "reconciliation in progress"),
+				*conditions.UnknownCondition(meta.ReadyCondition, meta.ProgressingReason, "reconciliation in progress"),
+			},
 		},
 	}
 
@@ -1786,7 +1915,10 @@ func TestHelmChartReconciler_reconcileSubRecs(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			g := NewWithT(t)
 
-			r := &HelmChartReconciler{}
+			r := &HelmChartReconciler{
+				Client:       fakeclient.NewClientBuilder().WithScheme(testEnv.GetScheme()).Build(),
+				patchOptions: getPatchOptions(helmChartReadyCondition.Owned, "sc"),
+			}
 			obj := &sourcev1.HelmChart{
 				ObjectMeta: metav1.ObjectMeta{
 					GenerateName: "test-",
@@ -1797,7 +1929,14 @@ func TestHelmChartReconciler_reconcileSubRecs(t *testing.T) {
 				},
 			}
 
-			got, err := r.reconcile(context.TODO(), obj, tt.reconcileFuncs)
+			g.Expect(r.Client.Create(context.TODO(), obj)).ToNot(HaveOccurred())
+			defer func() {
+				g.Expect(r.Client.Delete(context.TODO(), obj)).ToNot(HaveOccurred())
+			}()
+
+			sp := patch.NewSerialPatcher(obj, r.Client)
+
+			got, err := r.reconcile(context.TODO(), sp, obj, tt.reconcileFuncs)
 			g.Expect(err != nil).To(Equal(tt.wantErr))
 			g.Expect(got).To(Equal(tt.wantResult))
 
@@ -1892,8 +2031,7 @@ func TestHelmChartReconciler_statusConditions(t *testing.T) {
 			clientBuilder.WithObjects(obj)
 			c := clientBuilder.Build()
 
-			patchHelper, err := patch.NewHelper(obj, c)
-			g.Expect(err).ToNot(HaveOccurred())
+			serialPatcher := patch.NewSerialPatcher(obj, c)
 
 			if tt.beforeFunc != nil {
 				tt.beforeFunc(obj)
@@ -1903,9 +2041,10 @@ func TestHelmChartReconciler_statusConditions(t *testing.T) {
 			recResult := sreconcile.ResultSuccess
 			var retErr error
 
-			summarizeHelper := summarize.NewHelper(record.NewFakeRecorder(32), patchHelper)
+			summarizeHelper := summarize.NewHelper(record.NewFakeRecorder(32), serialPatcher)
 			summarizeOpts := []summarize.Option{
 				summarize.WithConditions(helmChartReadyCondition),
+				summarize.WithBiPolarityConditionTypes(sourcev1.SourceVerifiedCondition),
 				summarize.WithReconcileResult(recResult),
 				summarize.WithReconcileError(retErr),
 				summarize.WithIgnoreNotFound(),
@@ -2006,6 +2145,7 @@ func TestHelmChartReconciler_notify(t *testing.T) {
 
 			reconciler := &HelmChartReconciler{
 				EventRecorder: recorder,
+				patchOptions:  getPatchOptions(helmChartReadyCondition.Owned, "sc"),
 			}
 			build := &chart.Build{
 				Name:     "foo",
@@ -2055,7 +2195,8 @@ func TestHelmChartReconciler_reconcileSourceFromOCI_authStrategy(t *testing.T) {
 			name: "HTTP without basic auth",
 			want: sreconcile.ResultSuccess,
 			assertConditions: []metav1.Condition{
-				*conditions.TrueCondition(sourcev1.ArtifactOutdatedCondition, "NewChart", "pulled '<helmchart>' chart with version '<version>'"),
+				*conditions.TrueCondition(meta.ReconcilingCondition, meta.ProgressingReason, "building artifact: pulled 'helmchart' chart with version '0.1.0'"),
+				*conditions.UnknownCondition(meta.ReadyCondition, meta.ProgressingReason, "building artifact: pulled 'helmchart' chart with version '0.1.0'"),
 			},
 		},
 		{
@@ -2069,7 +2210,8 @@ func TestHelmChartReconciler_reconcileSourceFromOCI_authStrategy(t *testing.T) {
 				password: testRegistryPassword,
 			},
 			assertConditions: []metav1.Condition{
-				*conditions.TrueCondition(sourcev1.ArtifactOutdatedCondition, "NewChart", "pulled '<helmchart>' chart with version '<version>'"),
+				*conditions.TrueCondition(meta.ReconcilingCondition, meta.ProgressingReason, "building artifact: pulled 'helmchart' chart with version '0.1.0'"),
+				*conditions.UnknownCondition(meta.ReadyCondition, meta.ProgressingReason, "building artifact: pulled 'helmchart' chart with version '0.1.0'"),
 			},
 		},
 		{
@@ -2108,7 +2250,8 @@ func TestHelmChartReconciler_reconcileSourceFromOCI_authStrategy(t *testing.T) {
 			},
 			provider: "azure",
 			assertConditions: []metav1.Condition{
-				*conditions.TrueCondition(sourcev1.ArtifactOutdatedCondition, "NewChart", "pulled '<helmchart>' chart with version '<version>'"),
+				*conditions.TrueCondition(meta.ReconcilingCondition, meta.ProgressingReason, "building artifact: pulled 'helmchart' chart with version '0.1.0'"),
+				*conditions.UnknownCondition(meta.ReadyCondition, meta.ProgressingReason, "building artifact: pulled 'helmchart' chart with version '0.1.0'"),
 			},
 		},
 	}
@@ -2194,6 +2337,7 @@ func TestHelmChartReconciler_reconcileSourceFromOCI_authStrategy(t *testing.T) {
 				EventRecorder:           record.NewFakeRecorder(32),
 				Getters:                 testGetters,
 				RegistryClientGenerator: registry.ClientGenerator,
+				patchOptions:            getPatchOptions(helmChartReadyCondition.Owned, "sc"),
 			}
 
 			var b chart.Build
@@ -2210,7 +2354,14 @@ func TestHelmChartReconciler_reconcileSourceFromOCI_authStrategy(t *testing.T) {
 				assertConditions[k].Message = strings.ReplaceAll(assertConditions[k].Message, "<version>", metadata.Version)
 			}
 
-			got, err := r.reconcileSource(ctx, obj, &b)
+			g.Expect(r.Client.Create(context.TODO(), obj)).ToNot(HaveOccurred())
+			defer func() {
+				g.Expect(r.Client.Delete(context.TODO(), obj)).ToNot(HaveOccurred())
+			}()
+
+			sp := patch.NewSerialPatcher(obj, r.Client)
+
+			got, err := r.reconcileSource(ctx, sp, obj, &b)
 			g.Expect(err != nil).To(Equal(tt.wantErr))
 			g.Expect(got).To(Equal(tt.want))
 			g.Expect(obj.Status.Conditions).To(conditions.MatchConditions(tt.assertConditions))
@@ -2317,8 +2468,9 @@ func TestHelmChartReconciler_reconcileSourceFromOCI_verifySignature(t *testing.T
 			},
 			want: sreconcile.ResultSuccess,
 			assertConditions: []metav1.Condition{
-				*conditions.TrueCondition(sourcev1.ArtifactOutdatedCondition, "NewChart", "pulled '<name>' chart with version '<version>'"),
 				*conditions.TrueCondition(sourcev1.SourceVerifiedCondition, meta.SucceededReason, "verified signature of version <version>"),
+				*conditions.TrueCondition(meta.ReconcilingCondition, meta.ProgressingReason, "building artifact: pulled '<name>' chart with version '<version>'"),
+				*conditions.UnknownCondition(meta.ReadyCondition, meta.ProgressingReason, "building artifact: pulled '<name>' chart with version '<version>'"),
 			},
 			cleanFunc: func(g *WithT, build *chart.Build) {
 				g.Expect(os.Remove(build.Path)).To(Succeed())
@@ -2336,6 +2488,8 @@ func TestHelmChartReconciler_reconcileSourceFromOCI_verifySignature(t *testing.T
 			want: sreconcile.ResultSuccess,
 			assertConditions: []metav1.Condition{
 				*conditions.TrueCondition(sourcev1.ArtifactOutdatedCondition, "NewChart", "pulled '<name>' chart with version '<version>'"),
+				*conditions.TrueCondition(meta.ReconcilingCondition, meta.ProgressingReason, "building artifact: pulled '<name>' chart with version '<version>'"),
+				*conditions.UnknownCondition(meta.ReadyCondition, meta.ProgressingReason, "building artifact: pulled '<name>' chart with version '<version>'"),
 			},
 			cleanFunc: func(g *WithT, build *chart.Build) {
 				g.Expect(os.Remove(build.Path)).To(Succeed())
@@ -2377,6 +2531,7 @@ func TestHelmChartReconciler_reconcileSourceFromOCI_verifySignature(t *testing.T
 				Getters:                 testGetters,
 				Storage:                 storage,
 				RegistryClientGenerator: registry.ClientGenerator,
+				patchOptions:            getPatchOptions(helmChartReadyCondition.Owned, "sc"),
 			}
 
 			obj := &sourcev1.HelmChart{
@@ -2428,7 +2583,14 @@ func TestHelmChartReconciler_reconcileSourceFromOCI_verifySignature(t *testing.T
 				defer tt.cleanFunc(g, &b)
 			}
 
-			got, err := r.reconcileSource(ctx, obj, &b)
+			g.Expect(r.Client.Create(context.TODO(), obj)).ToNot(HaveOccurred())
+			defer func() {
+				g.Expect(r.Client.Delete(context.TODO(), obj)).ToNot(HaveOccurred())
+			}()
+
+			sp := patch.NewSerialPatcher(obj, r.Client)
+
+			got, err := r.reconcileSource(ctx, sp, obj, &b)
 			if tt.wantErr {
 				tt.wantErrMsg = strings.ReplaceAll(tt.wantErrMsg, "<url>", chartUrl)
 				g.Expect(err).ToNot(BeNil())
