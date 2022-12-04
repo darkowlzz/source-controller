@@ -18,6 +18,8 @@ replace github.com/emicklei/go-restful => github.com/emicklei/go-restful v2.16.0
 // The util.Walk func was never release as a tag.
 replace github.com/go-git/go-billy/v5 => github.com/go-git/go-billy/v5 v5.0.0-20210804024030-7ab80d7c013d
 
+replace github.com/fluxcd/pkg/runtime => github.com/fluxcd/pkg/runtime v0.24.1-0.20221125120525-ffa3674aaf94
+
 require (
 	cloud.google.com/go/storage v1.28.0
 	github.com/AdaLogics/go-fuzz-headers v0.0.0-20221103172237-443f56ff4ba8
